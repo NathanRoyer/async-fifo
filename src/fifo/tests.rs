@@ -102,3 +102,44 @@ fn test_multi_thread() {
         let _ = handle.join();
     }
 }
+
+#[test]
+#[cfg(feature = "blocking")]
+fn test_multi_thread_blocking() {
+    use alloc::sync::Arc;
+    use alloc::vec::Vec;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    let (producers, [mut consumer]): ([_; 12], [_; 1]) = super::new();
+    let mut producers = Vec::from(producers);
+    let total_consumed = Arc::new(AtomicUsize::new(0));
+
+    let sends = 120;
+    let total_produced = producers.len() * sends;
+    let to_send: Vec<_> = (0..10).collect();
+
+    let mut handles = Vec::new();
+
+    for _ in 0..producers.len() {
+        let mut tx = producers.remove(0);
+        let to_send = to_send.clone();
+
+        let thread_fn = move || {
+            for _ in 0..sends {
+                tx.send_iter(to_send.clone().into_iter());
+            }
+        };
+
+        handles.push(std::thread::spawn(thread_fn));
+    }
+
+    while total_consumed.load(Ordering::SeqCst) != total_produced {
+        let results = consumer.recv_exact_blocking::<10>();
+        assert_eq!(results.as_slice(), &to_send);
+        total_consumed.fetch_add(1, Ordering::SeqCst);
+    }
+
+    for handle in handles {
+        let _ = handle.join();
+    }
+}

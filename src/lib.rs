@@ -1,7 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![no_std]
 
-#[cfg(test)]
+#[cfg(any(test, feature = "blocking", doc))]
 extern crate std;
 
 extern crate alloc;
@@ -14,6 +14,9 @@ pub mod slot;
 
 /// First-in, first-out MPMC channels
 pub mod fifo;
+
+#[cfg(any(feature = "blocking", doc))]
+mod blocking;
 
 fn try_xchg_ptr<T>(atomic_ptr: &AtomicPtr<T>, old: *mut T, new: *mut T) -> bool {
     atomic_ptr.compare_exchange(old, new, SeqCst, Relaxed).is_ok()
