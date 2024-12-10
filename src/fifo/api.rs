@@ -6,7 +6,6 @@ use crate::slot::AtomicSlot;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use alloc::vec;
 
 use super::block::{Fifo, FifoImpl};
 use super::{Storage, TmpArray};
@@ -25,22 +24,19 @@ pub fn with_block_size<
     T: 'static,
 >() -> ([Producer<T>; P], [Consumer<T>; C]) {
     assert_eq!(F * 8, L);
-    let mut recycle_bins = Vec::with_capacity(C + P);
     let mut visitors = Vec::with_capacity(C + P);
     let mut wakers = Vec::with_capacity(C);
 
     for _ in 0..C {
-        recycle_bins.push(AtomicSlot::new(Box::new(vec![])));
         visitors.push(AtomicUsize::new(usize::MAX));
         wakers.push(AtomicSlot::default());
     }
 
     for _ in 0..P {
-        recycle_bins.push(AtomicSlot::new(Box::new(vec![])));
         visitors.push(AtomicUsize::new(usize::MAX));
     }
 
-    let fifo: Fifo<L, F, T> = Fifo::new(visitors.into(), wakers.into(), recycle_bins.into());
+    let fifo: Fifo<L, F, T> = Fifo::new(visitors.into(), wakers.into());
 
     let arc = Arc::new(fifo);
 
