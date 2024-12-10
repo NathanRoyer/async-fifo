@@ -68,14 +68,14 @@ impl<T> Producer<T> {
     /// Sends a batch of items in the channel, atomically.
     ///
     /// This operation is non-blocking and always succeeds immediately.
-    pub fn send_iter<I: ExactSizeIterator<Item = T>>(&mut self, mut iter: I) {
+    pub fn send_iter<I: ExactSizeIterator<Item = T>>(&self, mut iter: I) {
         self.fifo.send_iter(&mut iter, self.visitor_index);
     }
 
     /// Sends one item through the channel.
     ///
     /// This operation is non-blocking and always succeeds immediately.
-    pub fn send(&mut self, item: T) {
+    pub fn send(&self, item: T) {
         self.send_iter(core::iter::once(item));
     }
 }
@@ -94,26 +94,26 @@ unsafe impl<T> Sync for Consumer<T> {}
 
 impl<T> Consumer<T> {
     /// Tries to receive some items into custom storage.
-    pub fn try_recv_into(&mut self, storage: &mut dyn Storage<T>) -> usize {
+    pub fn try_recv_into(&self, storage: &mut dyn Storage<T>) -> usize {
         self.fifo.try_recv(storage, self.visitor_index)
     }
 
     /// Tries to receive as many items as possible, into a vector.
-    pub fn try_recv_many(&mut self) -> Vec<T> {
+    pub fn try_recv_many(&self) -> Vec<T> {
         let mut items = Vec::new();
         self.try_recv_into(&mut items);
         items
     }
 
     /// Tries to receive exactly `N` items into an array.
-    pub fn try_recv_exact<const N: usize>(&mut self) -> Option<[T; N]> {
+    pub fn try_recv_exact<const N: usize>(&self) -> Option<[T; N]> {
         let mut array = TmpArray(from_fn(|_| None));
         let len = self.try_recv_into(&mut array);
         (len == N).then(|| array.0.map(Option::unwrap))
     }
 
     /// Tries to receive one item.
-    pub fn try_recv(&mut self) -> Option<T> {
+    pub fn try_recv(&self) -> Option<T> {
         self.try_recv_exact().map(|[item]| item)
     }
 
