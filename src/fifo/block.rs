@@ -30,11 +30,7 @@ pub struct Block<const L: usize, const F: usize, T> {
 
 impl<const L: usize, const F: usize, T> Block<L, F, T> {
     pub fn fully_consumed(&self) -> bool {
-        let done = |byte: &AtomicU8| {
-            byte.load(SeqCst) == u8::MAX
-        };
-
-        self.consumed.iter().all(done)
+        (0..L).all(|i| get_slot_flag(&self.consumed, i))
     }
 
     pub fn reset_flags(&self) {
@@ -61,11 +57,13 @@ impl<const L: usize, const F: usize, T> Default for Block<L, F, T> {
 }
 
 fn set_slot_flag<const F: usize>(slot_flags: &[AtomicU8; F], i: usize) {
-    slot_flags[i / 8].fetch_or(1 << (i % 8), SeqCst);
+    let mask = 1 << (i % 8);
+    slot_flags[i / 8].fetch_or(mask, SeqCst);
 }
 
 fn get_slot_flag<const F: usize>(slot_flags: &[AtomicU8; F], i: usize) -> bool {
-    (slot_flags[i / 8].load(SeqCst) & (1 << (i % 8))) > 0
+    let mask = 1 << (i % 8);
+    (slot_flags[i / 8].load(SeqCst) & mask) > 0
 }
 
 fn try_xchg_int(atomic_int: &AtomicUsize, old: usize, new: usize) -> bool {
@@ -115,6 +113,7 @@ impl<const L: usize, const F: usize, T> Fifo<L, F, T> {
         self.visitors[visitor_index].store(usize::MAX, SeqCst);
     }
 
+    // visit must be ongoing
     fn produced(&self) -> usize {
         let mut is_first_block = true;
         let mut maybe_block = &self.first_block;
@@ -198,9 +197,10 @@ impl<const L: usize, const F: usize, T> FifoImpl<T> for Fifo<L, F, T> {
             }
 
             let next_block_offset = block_offset + L;
+            let block_range = block_offset..next_block_offset;
 
             // do we have slots here?
-            while i < next_block_offset && remaining > 0 {
+            while block_range.contains(&i) && remaining > 0 {
                 let item = iter.next().unwrap();
 
                 let slot_i = i - block_offset;
@@ -273,10 +273,13 @@ impl<const L: usize, const F: usize, T> FifoImpl<T> for Fifo<L, F, T> {
             }
 
             let next_block_offset = block_offset + L;
+            let block_range = block_offset..next_block_offset;
 
             // do we have slots here?
-            while i < next_block_offset && remaining > 0 {
+            while block_range.contains(&i) && remaining > 0 {
                 let slot_i = i - block_offset;
+                assert!(get_slot_flag(&block.produced, slot_i));
+
                 let slot_cell_ptr = block.slots[slot_i].get();
 
                 // safety: this pointer points to reachable memory
@@ -290,9 +293,10 @@ impl<const L: usize, const F: usize, T> FifoImpl<T> for Fifo<L, F, T> {
                     slot_cell.assume_init_read()
                 };
 
-                set_slot_flag(&block.consumed, slot_i);
                 let storage_index = negociated - remaining;
                 storage.push(storage_index, item);
+
+                set_slot_flag(&block.consumed, slot_i);
 
                 i += 1;
                 remaining -= 1;
