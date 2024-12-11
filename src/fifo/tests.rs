@@ -64,7 +64,7 @@ fn test_multi_thread_inner() {
 
     let sends = 120;
     let total_produced = producers.len() * sends;
-    let to_send: Vec<_> = (0..10).collect();
+    let to_send: Vec<_> = (0..100).collect();
 
     let mut handles = Vec::new();
 
@@ -105,7 +105,7 @@ fn test_multi_thread_inner() {
 
 #[test]
 fn test_multi_thread() {
-    for _ in 0..20 {
+    for _ in 0..1000 {
         test_multi_thread_inner();
     }
 }

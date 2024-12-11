@@ -1,4 +1,3 @@
-use core::sync::atomic::AtomicUsize;
 use core::array::from_fn;
 use core::task::Waker;
 
@@ -24,30 +23,23 @@ pub fn with_block_size<
     T: 'static,
 >() -> ([Producer<T>; P], [Consumer<T>; C]) {
     assert_eq!(F * 8, L);
-    let mut visitors = Vec::with_capacity(C + P);
     let mut wakers = Vec::with_capacity(C);
 
     for _ in 0..C {
-        visitors.push(AtomicUsize::new(usize::MAX));
         wakers.push(AtomicSlot::default());
     }
 
-    for _ in 0..P {
-        visitors.push(AtomicUsize::new(usize::MAX));
-    }
-
-    let fifo: Fifo<L, F, T> = Fifo::new(visitors.into(), wakers.into());
+    let fifo: Fifo<L, F, T> = Fifo::new(wakers.into());
 
     let arc = Arc::new(fifo);
 
     let consumer = |i| Consumer {
         fifo: arc.clone(),
-        visitor_index: i,
+        waker_index: i,
     };
 
-    let producer = |i| Producer {
+    let producer = |_i| Producer {
         fifo: arc.clone(),
-        visitor_index: C + i,
     };
 
     (from_fn(producer), from_fn(consumer))
@@ -61,7 +53,6 @@ pub fn new<const P: usize, const C: usize, T: 'static>() -> ([Producer<T>; P], [
 /// Fifo Production Handle
 pub struct Producer<T> {
     fifo: Arc<dyn FifoImpl<T>>,
-    visitor_index: usize,
 }
 
 impl<T> Producer<T> {
@@ -69,7 +60,7 @@ impl<T> Producer<T> {
     ///
     /// This operation is non-blocking and always succeeds immediately.
     pub fn send_iter<I: ExactSizeIterator<Item = T>>(&self, mut iter: I) {
-        self.fifo.send_iter(&mut iter, self.visitor_index);
+        self.fifo.send_iter(&mut iter);
     }
 
     /// Sends one item through the channel.
@@ -83,7 +74,7 @@ impl<T> Producer<T> {
 /// Fifo Consumtion Handle
 pub struct Consumer<T> {
     fifo: Arc<dyn FifoImpl<T>>,
-    visitor_index: usize,
+    waker_index: usize,
 }
 
 unsafe impl<T> Send for Producer<T> {}
@@ -95,7 +86,7 @@ unsafe impl<T> Sync for Consumer<T> {}
 impl<T> Consumer<T> {
     /// Tries to receive some items into custom storage.
     pub fn try_recv_into(&self, storage: &mut dyn Storage<T>) -> usize {
-        self.fifo.try_recv(storage, self.visitor_index)
+        self.fifo.try_recv(storage)
     }
 
     /// Tries to receive as many items as possible, into a vector.
@@ -119,11 +110,11 @@ impl<T> Consumer<T> {
 
     /// Sets the waker of the current task, to be woken up when new items are available.
     pub fn insert_waker(&self, waker: Box<Waker>) {
-        self.fifo.insert_waker(waker, self.visitor_index);
+        self.fifo.insert_waker(waker, self.waker_index);
     }
 
     /// Tries to take back a previously inserted waker.
     pub fn take_waker(&self) -> Option<Box<Waker>> {
-        self.fifo.take_waker(self.visitor_index)
+        self.fifo.take_waker(self.waker_index)
     }
 }

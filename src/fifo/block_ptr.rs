@@ -1,7 +1,7 @@
 // Almost all unsafe code is here.
 
-use core::sync::atomic::{AtomicPtr, AtomicUsize};
 use core::sync::atomic::Ordering::SeqCst;
+use core::sync::atomic::AtomicPtr;
 use core::mem::{drop, forget};
 use core::ptr::null_mut;
 
@@ -46,7 +46,7 @@ impl<const L: usize, const F: usize, T> BlockPointer<L, F, T> {
     /// and is fully consumed.
     ///
     /// Must only be called on the first block.
-    pub fn try_collect(&self, revision: &AtomicUsize) -> Option<CollectedBlock<L, F, T>> {
+    pub fn try_collect(&self, revision: usize) -> Option<CollectedBlock<L, F, T>> {
         // only collect consumed blocks that have a next block
         let this = self.load()?;
         let next = this.next.load()?;
@@ -65,7 +65,7 @@ impl<const L: usize, const F: usize, T> BlockPointer<L, F, T> {
         // make the next block, the first block
         if try_xchg_ptr(&self.inner, this_ptr, next_ptr) {
             let collected = CollectedBlock {
-                revision: revision.fetch_add(1, SeqCst),
+                revision,
                 block_ptr: this_ptr,
             };
 
