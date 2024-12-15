@@ -51,7 +51,7 @@ fn test_multi_steps() {
     assert_eq!(results, input);
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn test_multi_thread_inner() {
     use alloc::sync::Arc;
     use alloc::vec::Vec;
