@@ -70,7 +70,7 @@ fn try_xchg_int(atomic_int: &AtomicUsize, old: usize, new: usize) -> bool {
     atomic_int.compare_exchange(old, new, SeqCst, Relaxed).is_ok()
 }
 
-const REV_CAP: usize = 2;
+const REV_CAP: usize = 16;
 
 pub struct Fifo<const L: usize, const F: usize, T> {
     // updated by consumers when they collect fully consumed first blocks

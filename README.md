@@ -31,10 +31,13 @@ Most useful for the transfer of return values in the context of remote procedure
 ### Fully-featured MPMC Channels
 
 ```rust
-let ([mut tx1, tx2], [mut rx1, mut rx2]) = async_fifo::fifo::new();
+let (tx, [mut rx1, mut rx2]) = async_fifo::fifo::new();
 let item = "Hello, world!";
-tx1.send(item);
+tx.send(item);
 assert_eq!(rx2.try_recv(), Some(item));
+
+// producers can be cloned
+let _tx2 = tx.clone();
 
 // asynchronous use
 let _task = async {
@@ -51,6 +54,7 @@ These channels have the following characteristics:
 - Strict delivery order: these channels have strong FIFO guarantees
 - Batch production and consumption (both atomic)
 - Send operations are guaranteed to succeed immediately without any sort of yielding/blocking
+- Producers can be cloned (but not consumers)
 
 #### Internal Details
 

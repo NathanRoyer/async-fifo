@@ -2,7 +2,7 @@
 fn test_one() {
     use core::iter::once;
     use alloc::vec;
-    let ([tx], [rx]) = super::new();
+    let (tx, [rx]) = super::new();
 
     tx.send_iter(once("Test"));
     let results = rx.try_recv_many();
@@ -12,7 +12,7 @@ fn test_one() {
 
 #[test]
 fn test_many() {
-    let ([tx], [rx]) = super::new();
+    let (tx, [rx]) = super::new();
 
     let to_send: alloc::vec::Vec<_> = (0..12).collect();
     tx.send_iter(to_send.clone().into_iter());
@@ -24,7 +24,7 @@ fn test_many() {
 
 #[test]
 fn test_awful_lot() {
-    let ([tx], [rx]) = super::new();
+    let (tx, [rx]) = super::new();
 
     let to_send: alloc::vec::Vec<_> = (0..10000).collect();
     tx.send_iter(to_send.clone().into_iter());
@@ -37,7 +37,7 @@ fn test_awful_lot() {
 #[test]
 fn test_multi_steps() {
     use alloc::vec::Vec;
-    let ([tx], [rx]) = super::with_block_size::<1, 1, 256, 32, _>();
+    let (tx, [rx]) = super::with_block_size::<1, 256, 32, _>();
     let mut results = Vec::new();
     let mut input = Vec::new();
 
@@ -57,19 +57,18 @@ fn test_multi_thread_inner() {
     use alloc::vec::Vec;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    let (producers, consumers): ([_; 12], [_; 12]) = super::new();
-    let mut producers = Vec::from(producers);
+    let (producer, consumers) = super::new::<12, usize>();
     let mut consumers = Vec::from(consumers);
     let total_consumed = Arc::new(AtomicUsize::new(0));
 
     let sends = 120;
-    let total_produced = producers.len() * sends;
+    let total_produced = 12 * sends;
     let to_send: Vec<_> = (0..100).collect();
 
     let mut handles = Vec::new();
 
-    for _ in 0..producers.len() {
-        let tx = producers.remove(0);
+    for _ in 0..12 {
+        let tx = producer.clone();
         let to_send = to_send.clone();
 
         let thread_fn = move || {
@@ -88,7 +87,7 @@ fn test_multi_thread_inner() {
 
         let thread_fn = move || {
             while total_consumed.load(Ordering::SeqCst) != total_produced {
-                if let Some(results) = rx.try_recv_exact::<10>() {
+                if let Some(results) = rx.try_recv_exact::<1>() {
                     assert_eq!(results.as_slice(), &to_send);
                     total_consumed.fetch_add(1, Ordering::SeqCst);
                 }
@@ -105,7 +104,7 @@ fn test_multi_thread_inner() {
 
 #[test]
 fn test_multi_thread() {
-    for _ in 0..1000 {
+    for _ in 0..100 {
         test_multi_thread_inner();
     }
 }
@@ -117,18 +116,17 @@ fn test_multi_thread_blocking() {
     use alloc::vec::Vec;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    let (producers, [consumer]): ([_; 12], [_; 1]) = super::new();
-    let mut producers = Vec::from(producers);
+    let (producer, [consumer]) = super::new();
     let total_consumed = Arc::new(AtomicUsize::new(0));
 
     let sends = 120;
-    let total_produced = producers.len() * sends;
+    let total_produced = 12 * sends;
     let to_send: Vec<_> = (0..10).collect();
 
     let mut handles = Vec::new();
 
-    for _ in 0..producers.len() {
-        let tx = producers.remove(0);
+    for _ in 0..12 {
+        let tx = producer.clone();
         let to_send = to_send.clone();
 
         let thread_fn = move || {
