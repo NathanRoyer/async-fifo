@@ -12,8 +12,11 @@ use core::sync::atomic::Ordering::{SeqCst, Relaxed};
 /// Atomic and asynchronous slots
 pub mod slot;
 
-/// First-in, first-out MPMC channels
+/// First-in, first-out MPMC channels (all items re-exported at crate root)
 pub mod fifo;
+
+#[doc(hidden)]
+pub use fifo::*;
 
 #[cfg(any(feature = "blocking", doc))]
 mod blocking;
