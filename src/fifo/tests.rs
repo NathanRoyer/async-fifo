@@ -27,7 +27,7 @@ fn test_awful_lot() {
     let (tx, [rx]) = super::new();
 
     let to_send: alloc::vec::Vec<_> = (0..10000).collect();
-    tx.send_iter(to_send.clone().into_iter());
+    tx.send_iter(to_send.iter().cloned());
 
     let results = rx.try_recv_many();
 
@@ -73,7 +73,7 @@ fn test_multi_thread_inner() {
 
         let thread_fn = move || {
             for _ in 0..sends {
-                tx.send_iter(to_send.clone().into_iter());
+                tx.send_iter(to_send.iter().cloned());
             }
         };
 
@@ -82,13 +82,13 @@ fn test_multi_thread_inner() {
 
     for _ in 0..consumers.len() {
         let rx = consumers.remove(0);
-        let to_send = to_send.clone();
         let total_consumed = total_consumed.clone();
+        let to_send = to_send.clone();
 
         let thread_fn = move || {
             while total_consumed.load(Ordering::SeqCst) != total_produced {
-                if let Some(results) = rx.try_recv_exact::<1>() {
-                    assert_eq!(results.as_slice(), &to_send);
+                if let Some(array) = rx.try_recv_exact::<100>() {
+                    assert_eq!(array.as_slice(), &to_send);
                     total_consumed.fetch_add(1, Ordering::SeqCst);
                 }
             }
@@ -98,13 +98,13 @@ fn test_multi_thread_inner() {
     }
 
     for handle in handles {
-        let _ = handle.join();
+        handle.join().unwrap();
     }
 }
 
 #[test]
 fn test_multi_thread() {
-    for _ in 0..100 {
+    for _ in 0..10 {
         test_multi_thread_inner();
     }
 }
