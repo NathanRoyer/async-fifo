@@ -123,9 +123,24 @@ pub fn new_box<const N: usize, T: 'static>() -> (Producer<T>, Box<[Consumer<T>; 
 }
 
 /// Fifo Production Handle (implements `Clone`)
-#[derive(Clone)]
 pub struct Producer<T> {
     fifo: Arc<dyn FifoImpl<T>>,
+}
+
+impl<T> Clone for Producer<T> {
+    fn clone(&self) -> Self {
+        let fifo = self.fifo.clone();
+        fifo.inc_num_prod();
+        Self {
+            fifo,
+        }
+    }
+}
+
+impl<T> Drop for Producer<T> {
+    fn drop(&mut self) {
+        self.fifo.dec_num_prod();
+    }
 }
 
 impl<T> Producer<T> {
@@ -157,6 +172,11 @@ unsafe impl<T> Send for Consumer<T> {}
 unsafe impl<T> Sync for Consumer<T> {}
 
 impl<T> Consumer<T> {
+    /// Returns true if all producers have been dropped
+    pub fn is_closed(&self) -> bool {
+        self.fifo.is_closed()
+    }
+
     /// Tries to receive some items into custom storage.
     pub fn try_recv_into(&self, storage: &mut dyn Storage<T>) -> usize {
         self.fifo.try_recv(storage)
