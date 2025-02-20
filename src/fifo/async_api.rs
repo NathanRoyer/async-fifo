@@ -1,12 +1,11 @@
 use core::task::{Waker, Context, Poll};
 use core::future::Future;
-use core::array::from_fn;
 use core::pin::Pin;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use super::{Consumer, Storage, TmpArray};
+use super::{Consumer, Storage, TmpArray, ExactSizeVec};
 
 /// An error type returned when the channel is closed
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -14,8 +13,6 @@ pub struct Closed;
 
 /// Asynchronous extension to [`Storage`]
 pub trait AsyncStorage<T>: Storage<T> + Default + Unpin {
-    type Output;
-    fn finish(self, pushed: usize) -> Self::Output;
 }
 
 /// Future for Fifo consumption
@@ -45,6 +42,11 @@ impl<T: Unpin> Consumer<T> {
         self.recv_into::<TmpArray<N, T>>()
     }
 
+    /// Receives exactly `N` items into a Vec, asynchronously.
+    pub fn recv_exact_vec<const N: usize>(&self) -> RecvExactVec<'_, N, T> {
+        self.recv_into::<ExactSizeVec<N, T>>()
+    }
+
     /// Receives one item, asynchronously.
     pub fn recv(&self) -> RecvOne<'_, T> {
         self.recv_into::<Option<T>>()
@@ -55,15 +57,15 @@ impl<'a, S: AsyncStorage<T>, T> Future for Recv<'a, S, T> {
     type Output = Result<S::Output, Closed>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut storage = self.storage.take().unwrap_or_default();
+        let storage = self.storage.take().unwrap_or_default();
 
         let closed = self.consumer.is_closed();
 
         // first try
-        let num = self.consumer.try_recv_into(&mut storage);
-        if num > 0 {
-            return Poll::Ready(Ok(storage.finish(num)));
-        }
+        let storage = match self.consumer.try_recv_into(storage) {
+            Ok(result) => return Poll::Ready(Ok(result)),
+            Err(storage) => storage,
+        };
 
         // if there is no data, check if it's closed
         if closed {
@@ -88,14 +90,16 @@ impl<'a, S: AsyncStorage<T>, T> Future for Recv<'a, S, T> {
         }
 
         // second try
-        let num = self.consumer.try_recv_into(&mut storage);
-        if num > 0 {
-            // try to spare the waker box
-            self.waker_box = self.consumer.take_waker();
-            Poll::Ready(Ok(storage.finish(num)))
-        } else {
-            self.storage = Some(storage);
-            Poll::Pending
+        match self.consumer.try_recv_into(storage) {
+            Ok(result) => {
+                // try to spare the waker box
+                self.waker_box = self.consumer.take_waker();
+                Poll::Ready(Ok(result))
+            },
+            Err(storage) => {
+                self.storage = Some(storage);
+                Poll::Pending
+            },
         }
     }
 }
@@ -131,33 +135,14 @@ impl<T: Unpin> Consumer<T> {
     }
 }
 
-impl<T: Unpin> AsyncStorage<T> for Vec<T> {
-    type Output = Self;
-    fn finish(self, _pushed: usize) -> Self { self }
-}
-
 /// Future for Fifo consumption of one item
 pub type RecvOne<'a, T> = Recv<'a, Option<T>, T>;
-
-impl<T: Unpin> AsyncStorage<T> for Option<T> {
-    type Output = T;
-    fn finish(self, _pushed: usize) -> Self::Output {
-        self.unwrap()
-    }
-}
 
 /// Future for Fifo consumption of `N` items
 pub type RecvExact<'a, const N: usize, T> = Recv<'a, TmpArray<N, T>, T>;
 
-impl<const N: usize, T: Unpin> Default for TmpArray<N, T> {
-    fn default() -> Self {
-        Self(from_fn(|_| None))
-    }
-}
+/// Future for Fifo consumption of `N` items
+pub type RecvExactVec<'a, const N: usize, T> = Recv<'a, ExactSizeVec<N, T>, T>;
 
-impl<const N: usize, T: Unpin> AsyncStorage<T> for TmpArray<N, T> {
-    type Output = [T; N];
-    fn finish(self, _pushed: usize) -> Self::Output {
-        self.0.map(Option::unwrap)
-    }
+impl<T: Unpin, S: Storage<T> + Unpin + Default> AsyncStorage<T> for S {
 }

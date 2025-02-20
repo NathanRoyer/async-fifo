@@ -7,7 +7,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use super::block::{Fifo, FifoImpl};
-use super::{Storage, TmpArray};
+use super::{Storage, TmpArray, ExactSizeVec};
 
 #[derive(Default)]
 /// Custom Block Size
@@ -20,10 +20,10 @@ use super::{Storage, TmpArray};
 /// This structure allows you to create channels with custom block size (chunk length).
 ///
 /// See the following pre-defined block sizes:
-/// - [`SmallBlockSize`]
-/// - [`DefaultBlockSize`]
-/// - [`LargeBlockSize`]
-/// - [`HugeBlockSize`]
+/// - [`SmallBlockSize`]: 8 slots per block
+/// - [`DefaultBlockSize`]: 32 slots per block
+/// - [`LargeBlockSize`]: 4096 slots per block
+/// - [`HugeBlockSize`]: 1048576 slots per block
 ///
 /// L must be equal to F x 8
 pub struct BlockSize<const L: usize, const F: usize>;
@@ -173,22 +173,25 @@ impl<T> Consumer<T> {
     }
 
     /// Tries to receive some items into custom storage.
-    pub fn try_recv_into(&self, storage: &mut dyn Storage<T>) -> usize {
-        self.fifo.try_recv(storage)
+    pub fn try_recv_into<S: Storage<T>>(&self, mut storage: S) -> Result<S::Output, S> {
+        let pushed = self.fifo.try_recv(&mut storage);
+        storage.finish(pushed)
     }
 
     /// Tries to receive as many items as possible, into a vector.
-    pub fn try_recv_many(&self) -> Vec<T> {
-        let mut items = Vec::new();
-        self.try_recv_into(&mut items);
-        items
+    pub fn try_recv_many(&self) -> Option<Vec<T>> {
+        self.try_recv_into(Vec::new()).ok()
     }
 
     /// Tries to receive exactly `N` items into an array.
     pub fn try_recv_exact<const N: usize>(&self) -> Option<[T; N]> {
-        let mut array = TmpArray(from_fn(|_| None));
-        let len = self.try_recv_into(&mut array);
-        (len == N).then(|| array.0.map(Option::unwrap))
+        let array = TmpArray(from_fn(|_| None));
+        self.try_recv_into(array).ok()
+    }
+
+    /// Tries to receive exactly `N` items into a Vec.
+    pub fn try_recv_exact_vec<const N: usize>(&self) -> Option<Vec<T>> {
+        self.try_recv_into(ExactSizeVec::<N, T>::default()).ok()
     }
 
     /// Tries to receive one item.
