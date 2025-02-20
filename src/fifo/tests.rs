@@ -67,12 +67,12 @@ fn test_multi_thread_inner() {
     use alloc::vec::Vec;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    let (producer, mut consumers) = super::new_vec::<12, usize>();
+    let (producer, mut consumers) = super::new_vec(12);
     let total_consumed = Arc::new(AtomicUsize::new(0));
 
     let sends = 120;
     let total_produced = 12 * sends;
-    let to_send: Vec<_> = (0..100).collect();
+    let to_send: Vec<usize> = (0..100).collect();
 
     let mut handles = Vec::new();
 

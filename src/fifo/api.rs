@@ -29,15 +29,10 @@ use super::{Storage, TmpArray};
 pub struct BlockSize<const L: usize, const F: usize>;
 
 impl<const L: usize, const F: usize> BlockSize<L, F> {
-    fn build_n<const N: usize, T: 'static>() -> (Producer<T>, Arc<dyn FifoImpl<T>>) {
+    fn build_n<T: 'static>(num_rx: usize) -> (Producer<T>, Arc<dyn FifoImpl<T>>) {
         assert_eq!(F * 8, L);
-        let mut wakers = Vec::with_capacity(N);
-
-        for _ in 0..N {
-            wakers.push(AtomicSlot::default());
-        }
-
-        let fifo: Fifo<L, F, T> = Fifo::new(wakers.into());
+        let wakers = (0..num_rx).map(|_| AtomicSlot::default()).collect();
+        let fifo: Fifo<L, F, T> = Fifo::new(Vec::into(wakers));
 
         let arc = Arc::new(fifo);
 
@@ -54,7 +49,7 @@ impl<const L: usize, const F: usize> BlockSize<L, F> {
     ///
     /// Panics if `F` isn't equal to `L / 8`;
     pub fn build<const N: usize, T: 'static>() -> (Producer<T>, [Consumer<T>; N]) {
-        let (tx, fifo) = Self::build_n::<N, T>();
+        let (tx, fifo) = Self::build_n::<T>(N);
 
         let rx_array = from_fn(|i| Consumer {
             fifo: fifo.clone(),
@@ -64,11 +59,11 @@ impl<const L: usize, const F: usize> BlockSize<L, F> {
         (tx, rx_array)
     }
 
-    pub fn build_vec<const N: usize, T: 'static>() -> (Producer<T>, Vec<Consumer<T>>) {
-        let (tx, fifo) = Self::build_n::<N, T>();
-        let mut rx_vec = Vec::with_capacity(N);
+    pub fn build_vec<T: 'static>(num_rx: usize) -> (Producer<T>, Vec<Consumer<T>>) {
+        let (tx, fifo) = Self::build_n::<T>(num_rx);
+        let mut rx_vec = Vec::with_capacity(num_rx);
 
-        for i in 0..N {
+        for i in 0..num_rx {
             rx_vec.push(Consumer {
                 fifo: fifo.clone(),
                 waker_index: i,
@@ -79,7 +74,7 @@ impl<const L: usize, const F: usize> BlockSize<L, F> {
     }
 
     pub fn build_box<const N: usize, T: 'static>() -> (Producer<T>, Box<[Consumer<T>; N]>) {
-        let (tx, rx_vec) = Self::build_vec::<N, T>();
+        let (tx, rx_vec) = Self::build_vec::<T>(N);
         match Box::try_from(rx_vec) {
             Ok(rx_box) => (tx, rx_box),
             Err(_) => unreachable!()
@@ -113,8 +108,8 @@ pub fn new<const N: usize, T: 'static>() -> (Producer<T>, [Consumer<T>; N]) {
 }
 
 /// Creates a Fifo with default block size (Vec of Consumers)
-pub fn new_vec<const N: usize, T: 'static>() -> (Producer<T>, Vec<Consumer<T>>) {
-    DefaultBlockSize::build_vec::<N, T>()
+pub fn new_vec<T: 'static>(num_consumers: usize) -> (Producer<T>, Vec<Consumer<T>>) {
+    DefaultBlockSize::build_vec::<T>(num_consumers)
 }
 
 /// Creates a Fifo with default block size (Boxed Array of Consumers)
