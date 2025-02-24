@@ -6,6 +6,9 @@ fn test_one() {
     let results = rx.try_recv();
 
     assert_eq!(results, Some("Test"));
+
+    core::mem::drop(tx);
+    assert!(rx.is_closed());
 }
 
 #[test]
@@ -17,6 +20,9 @@ fn test_zero_sized() {
     let results = rx.try_recv_array();
 
     assert_eq!(results, Some(array));
+
+    core::mem::drop(tx);
+    assert!(rx.is_closed());
 }
 
 #[test]
@@ -30,6 +36,9 @@ fn test_multiple() {
     rx.try_recv_many(&mut results);
 
     assert_eq!(results, to_send);
+
+    core::mem::drop(tx);
+    assert!(rx.is_closed());
 }
 
 #[test]
@@ -43,6 +52,9 @@ fn test_10k() {
     rx.try_recv_many(&mut results);
 
     assert_eq!(results, to_send);
+
+    core::mem::drop(tx);
+    assert!(rx.is_closed());
 }
 
 #[test]
@@ -61,6 +73,9 @@ fn test_multi_steps() {
     }
 
     assert_eq!(results, input);
+
+    core::mem::drop(tx);
+    assert!(rx.is_closed());
 }
 
 #[cfg(test)]
