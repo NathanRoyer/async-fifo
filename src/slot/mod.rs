@@ -4,7 +4,7 @@ use core::ptr::null_mut;
 
 use alloc::boxed::Box;
 
-use crate::try_xchg_ptr;
+use crate::try_swap_ptr;
 
 mod async_api;
 
@@ -35,7 +35,7 @@ impl<T> AtomicSlot<T> {
     /// Tries to push an item into this slot, failing if it's occupied or locked.
     pub fn try_insert(&self, item: Box<T>) -> Result<(), Box<T>> {
         let item_ptr = Box::leak(item);
-        match try_xchg_ptr(&self.inner, Self::EMPTY, item_ptr) {
+        match try_swap_ptr(&self.inner, Self::EMPTY, item_ptr) {
             true => Ok(()),
             false => Err(unsafe { Box::from_raw(item_ptr) }),
         }
@@ -66,7 +66,7 @@ impl<T> AtomicSlot<T> {
             false => Self::EMPTY,
         };
 
-        match try_xchg_ptr(&self.inner, item_ptr, next) {
+        match try_swap_ptr(&self.inner, item_ptr, next) {
             true => Some(unsafe { Box::from_raw(item_ptr) }),
             false => None,
         }
@@ -80,7 +80,7 @@ impl<T> AtomicSlot<T> {
     ///
     /// Does nothing if the slot isn't locked
     pub fn unlock(&self) -> bool {
-        try_xchg_ptr(&self.inner, Self::LOCKED, Self::EMPTY)
+        try_swap_ptr(&self.inner, Self::LOCKED, Self::EMPTY)
     }
 }
 

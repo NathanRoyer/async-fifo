@@ -21,6 +21,6 @@ pub use fifo::*;
 #[cfg(any(feature = "blocking", doc))]
 mod blocking;
 
-fn try_xchg_ptr<T>(atomic_ptr: &AtomicPtr<T>, old: *mut T, new: *mut T) -> bool {
+fn try_swap_ptr<T>(atomic_ptr: &AtomicPtr<T>, old: *mut T, new: *mut T) -> bool {
     atomic_ptr.compare_exchange(old, new, SeqCst, Relaxed).is_ok()
 }

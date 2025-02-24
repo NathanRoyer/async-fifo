@@ -8,7 +8,7 @@ use core::ptr::null_mut;
 use alloc::boxed::Box;
 
 use super::block::Block;
-use crate::try_xchg_ptr;
+use crate::try_swap_ptr;
 
 #[repr(transparent)]
 pub struct BlockPointer<const L: usize, const F: usize, T> {
@@ -46,24 +46,29 @@ impl<const L: usize, const F: usize, T> BlockPointer<L, F, T> {
     /// and is fully consumed.
     ///
     /// Must only be called on the first block.
+    /// Must not be called concurrently.
     pub fn try_collect(&self, revision: usize) -> Option<CollectedBlock<L, F, T>> {
         // only collect consumed blocks that have a next block
         let this = self.load()?;
         let next = this.next.load()?;
 
         // are we all done with this block?
-        this.fully_consumed().then_some(())?;
+        if !this.fully_consumed() {
+            return None;
+        }
 
-        // the next's block offset
-        assert_eq!(next.offset.load(SeqCst), 0);
+        // read the current first block offset
         let offset = this.offset.load(SeqCst);
+
+        // set the next's block offset
+        assert_eq!(next.offset.load(SeqCst), 0);
         next.offset.store(offset + L, SeqCst);
 
         let this_ptr = this as *const _ as *mut _;
         let next_ptr = next as *const _ as *mut _;
 
         // make the next block, the first block
-        if try_xchg_ptr(&self.inner, this_ptr, next_ptr) {
+        if try_swap_ptr(&self.inner, this_ptr, next_ptr) {
             let collected = CollectedBlock {
                 revision,
                 block_ptr: this_ptr,
@@ -78,7 +83,7 @@ impl<const L: usize, const F: usize, T> BlockPointer<L, F, T> {
     fn append(&self, tail: *mut Block<L, F, T>) {
         let mut this = self;
         loop {
-            match try_xchg_ptr(&this.inner, null_mut(), tail) {
+            match try_swap_ptr(&this.inner, null_mut(), tail) {
                 true => break,
                 false => this = &this.load().unwrap().next,
             }
