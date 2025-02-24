@@ -5,26 +5,74 @@ use core::pin::Pin;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use super::{Consumer, Storage, TmpArray, ExactSizeVec};
+use super::{Consumer, Storage};
+use super::storage::TmpArray;
 
 /// An error type returned when the channel is closed
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Closed;
 
-/// Asynchronous extension to [`Storage`]
-pub trait AsyncStorage<T>: Storage<T> + Default + Unpin {
-}
+/// Asynchronous variant of [`Storage`] (Borrowing)
+pub trait FillStorage<T>: Storage<T> + Unpin {}
+
+/// Asynchronous variant of [`Storage`] (Defaulting)
+pub trait RecvStorage<T>: FillStorage<T> + Default {}
 
 /// Future for Fifo consumption
-pub struct Recv<'a, S: AsyncStorage<T>, T> {
+///
+/// Unlike [`Fill`], this future will construct the backing
+/// storage using its implementation of `Default`.
+pub struct Recv<'a, S: RecvStorage<T>, T> {
     consumer: &'a Consumer<T>,
     storage: Option<S>,
     waker_box: Option<Box<Waker>>,
 }
 
+/// Future for Fifo consumption
+///
+/// Unlike [`Recv`], this future will use a mutably borrowed
+/// storage object that you must provide.
+pub struct Fill<'a, S: FillStorage<T>, T> {
+    consumer: &'a Consumer<T>,
+    storage: S,
+    waker_box: Option<Box<Waker>>,
+}
+
+/// Future for Fifo consumption of one item
+pub type RecvOne<'a, T> = Recv<'a, Option<T>, T>;
+
+/// Future for Fifo consumption of `N` items
+pub type RecvArray<'a, const N: usize, T> = Recv<'a, TmpArray<N, T>, T>;
+
+/// Future for Fifo consumption of `N` items
+pub type FillExact<'a, T> = Fill<'a, &'a mut [T], T>;
+
+/// Future for Fifo consumption of `N` items
+pub type FillMany<'a, T> = Fill<'a, &'a mut Vec<T>, T>;
+
 impl<T: Unpin> Consumer<T> {
+    /// Receives one item, asynchronously.
+    pub fn recv(&self) -> RecvOne<'_, T> {
+        self.into_recv()
+    }
+
+    /// Receives as many items as possible, into a vector, asynchronously.
+    pub fn recv_many<'a>(&'a self, vec: &'a mut Vec<T>) -> FillMany<'a, T> {
+        self.into_fill(vec)
+    }
+
+    /// Receives exactly `N` items into an array, asynchronously.
+    pub fn recv_exact<'a>(&'a self, slice: &'a mut [T]) -> FillExact<'a, T> {
+        self.into_fill(slice)
+    }
+
+    /// Receives exactly `N` items into an array, asynchronously.
+    pub fn recv_array<const N: usize>(&self) -> RecvArray<'_, N, T> {
+        self.into_recv()
+    }
+
     /// Receives some items into custom storage, asynchronously.
-    pub fn recv_into<S: AsyncStorage<T>>(&self) -> Recv<'_, S, T> {
+    pub fn into_recv<S: RecvStorage<T>>(&self) -> Recv<'_, S, T> {
         Recv {
             consumer: self,
             waker_box: None,
@@ -32,34 +80,46 @@ impl<T: Unpin> Consumer<T> {
         }
     }
 
-    /// Receives as many items as possible, into a vector, asynchronously.
-    pub fn recv_many(&self) -> Recv<'_, Vec<T>, T> {
-        self.recv_into::<Vec<T>>()
-    }
-
-    /// Receives exactly `N` items into an array, asynchronously.
-    pub fn recv_exact<const N: usize>(&self) -> RecvExact<'_, N, T> {
-        self.recv_into::<TmpArray<N, T>>()
-    }
-
-    /// Receives exactly `N` items into a Vec, asynchronously.
-    pub fn recv_exact_vec<const N: usize>(&self) -> RecvExactVec<'_, N, T> {
-        self.recv_into::<ExactSizeVec<N, T>>()
-    }
-
-    /// Receives one item, asynchronously.
-    pub fn recv(&self) -> RecvOne<'_, T> {
-        self.recv_into::<Option<T>>()
+    /// Receives some items into custom storage, asynchronously.
+    pub fn into_fill<S: FillStorage<T>>(&self, storage: S) -> Fill<'_, S, T> {
+        Fill {
+            consumer: self,
+            waker_box: None,
+            storage,
+        }
     }
 }
 
-impl<'a, S: AsyncStorage<T>, T> Future for Recv<'a, S, T> {
+fn set_waker_check_closed<T>(
+    waker_box: Option<Box<Waker>>,
+    cx: &mut Context<'_>,
+    consumer: &Consumer<T>,
+) -> bool {
+    if consumer.is_closed() {
+        return true;
+    }
+
+    // get a waker box
+    let waker = match waker_box {
+        Some(mut waker) => {
+            (*waker).clone_from(cx.waker());
+            waker
+        },
+        None => Box::new(cx.waker().clone()),
+    };
+
+    // set it up
+    consumer.insert_waker(waker);
+
+    // maybe it was closed while we were inserting our waker
+    consumer.is_closed()
+}
+
+impl<'a, S: RecvStorage<T>, T> Future for Recv<'a, S, T> {
     type Output = Result<S::Output, Closed>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let storage = self.storage.take().unwrap_or_default();
-
-        let closed = self.consumer.is_closed();
 
         // first try
         let storage = match self.consumer.try_recv_into(storage) {
@@ -67,25 +127,8 @@ impl<'a, S: AsyncStorage<T>, T> Future for Recv<'a, S, T> {
             Err(storage) => storage,
         };
 
-        // if there is no data, check if it's closed
-        if closed {
-            return Poll::Ready(Err(Closed));
-        }
-
-        // get a waker box
-        let waker = match self.waker_box.take() {
-            Some(mut waker) => {
-                (*waker).clone_from(cx.waker());
-                waker
-            },
-            None => Box::new(cx.waker().clone()),
-        };
-
-        // set it up
-        self.consumer.insert_waker(waker);
-
-        // maybe it was closed while we were inserting our waker
-        if self.consumer.is_closed() {
+        let waker_box = self.waker_box.take();
+        if set_waker_check_closed(waker_box, cx, &self.consumer) {
             return Poll::Ready(Err(Closed));
         }
 
@@ -104,45 +147,63 @@ impl<'a, S: AsyncStorage<T>, T> Future for Recv<'a, S, T> {
     }
 }
 
+impl<'a, T: Unpin, S: FillStorage<T>> Future for Fill<'a, S, T> {
+    type Output = Result<usize, Closed>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // first try
+        let len = self.consumer.fifo.try_recv(&mut self.storage);
+        if len != 0 {
+            return Poll::Ready(Ok(len));
+        }
+
+        let waker_box = self.waker_box.take();
+        if set_waker_check_closed(waker_box, cx, &self.consumer) {
+            return Poll::Ready(Err(Closed));
+        }
+
+        // second try
+        let len = self.consumer.fifo.try_recv(&mut self.storage);
+        if len != 0 {
+            // try to spare the waker box
+            self.waker_box = self.consumer.take_waker();
+            Poll::Ready(Ok(len))
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
 #[cfg(any(feature = "blocking", doc))]
 impl<T: Unpin> Consumer<T> {
-    /// Receives some items into custom storage, blocking.
-    ///
-    /// This method is only available if you enable the `blocking` feature.
-    pub fn recv_into_blocking<S: AsyncStorage<T>>(&self) -> Result<S::Output, Closed> {
-        crate::blocking::block_on(self.recv_into::<S>())
-    }
-
-    /// Receives as many items as possible, into a vector, blocking.
-    ///
-    /// This method is only available if you enable the `blocking` feature.
-    pub fn recv_many_blocking(&self) -> Result<Vec<T>, Closed> {
-        crate::blocking::block_on(self.recv_many())
-    }
-
-    /// Receives exactly `N` items into an array, blocking.
-    ///
-    /// This method is only available if you enable the `blocking` feature.
-    pub fn recv_exact_blocking<const N: usize>(&self) -> Result<[T; N], Closed> {
-        crate::blocking::block_on(self.recv_exact())
-    }
-
     /// Receives one item, blocking.
     ///
     /// This method is only available if you enable the `blocking` feature.
     pub fn recv_blocking(&self) -> Result<T, Closed> {
         crate::blocking::block_on(self.recv())
     }
+
+    /// Receives some items into an array, blocking.
+    ///
+    /// This method is only available if you enable the `blocking` feature.
+    pub fn recv_array_blocking<const N: usize>(&self) -> Result<[T; N], Closed> {
+        crate::blocking::block_on(self.recv_array())
+    }
+
+    /// Receives as many items as possible, into a vector, blocking.
+    ///
+    /// This method is only available if you enable the `blocking` feature.
+    pub fn recv_many_blocking(&self, vec: &mut Vec<T>) -> Result<usize, Closed> {
+        crate::blocking::block_on(self.recv_many(vec))
+    }
+
+    /// Fills a mutable slice with received items, blocking.
+    ///
+    /// This method is only available if you enable the `blocking` feature.
+    pub fn recv_exact_blocking(&self, slice: &mut [T]) -> Result<usize, Closed> {
+        crate::blocking::block_on(self.recv_exact(slice))
+    }
 }
 
-/// Future for Fifo consumption of one item
-pub type RecvOne<'a, T> = Recv<'a, Option<T>, T>;
-
-/// Future for Fifo consumption of `N` items
-pub type RecvExact<'a, const N: usize, T> = Recv<'a, TmpArray<N, T>, T>;
-
-/// Future for Fifo consumption of `N` items
-pub type RecvExactVec<'a, const N: usize, T> = Recv<'a, ExactSizeVec<N, T>, T>;
-
-impl<T: Unpin, S: Storage<T> + Unpin + Default> AsyncStorage<T> for S {
-}
+impl<T: Unpin, S: Storage<T> + Unpin> FillStorage<T> for S {}
+impl<T: Unpin, S: FillStorage<T> + Default> RecvStorage<T> for S {}

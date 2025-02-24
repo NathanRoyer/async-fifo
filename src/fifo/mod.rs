@@ -19,7 +19,7 @@ mod async_api;
 
 pub use api::{Producer, Consumer, BlockSize, new, new_vec, new_box};
 pub use api::{SmallBlockSize, DefaultBlockSize, LargeBlockSize, HugeBlockSize};
-pub use async_api::{Closed, Recv, RecvOne, RecvExact, AsyncStorage};
+pub use async_api::{Closed, Recv, Fill, RecvOne, RecvArray, FillMany, FillExact, FillStorage, RecvStorage};
 
 // Dyn-Compatible subset of the Storage trait, used by the `block` module.
 //
@@ -34,12 +34,26 @@ trait StorageCompat<T> {
 pub trait Storage<T>: Sized {
     type Output;
 
+    /// Insert an item into a storage slot
+    ///
+    /// `index` is the index of this push operation
+    /// since the call to `Consumer::try_recv_*`.
     fn push(&mut self, index: usize, item: T);
+
+    /// Called to seal the storage after all negociated
+    /// items have been received
+    ///
+    /// The negociated number of items is available as `pushed`.
     fn finish(self, pushed: usize) -> Result<Self::Output, Self>;
 
     #[allow(unused_variables)]
+    /// Pre-allocate space for `len` additional items
     fn reserve(&mut self, len: usize) {}
 
+    /// Specify the number of items that this storage
+    /// can handle
+    ///
+    /// The value must be returned as (minimum, maximum).
     fn bounds(&self) -> (Option<usize>, Option<usize>) {
         (None, None)
     }
