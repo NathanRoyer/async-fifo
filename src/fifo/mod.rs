@@ -1,3 +1,19 @@
+//! ### Characteristics
+//!
+//! - Multi-Producer / Multi-Consumer (MPMC) with every item routed to exactly one consumer
+//! - Non-Blocking, Asynchronous and Blocking methods available
+//! - Strict delivery order: these channels have strong FIFO guarantees
+//! - Batch production and consumption (both atomic)
+//! - Send operations are guaranteed to succeed immediately without any sort of yielding/blocking
+//! - Producers can be cloned (but not consumers)
+//! - The number of consumers must be provided to the constructor
+//!
+//! ### Differences with `async-channel`
+//!
+//! - Sending succeeds immediately
+//! - New receivers cannot be obtained after creating the FIFO (no cloning)
+//! - Provides strong ordering guarantees
+//!
 //! ### Internal Details
 //! 
 //! Fifos internally own a chain of blocks.

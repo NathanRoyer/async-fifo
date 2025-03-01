@@ -209,7 +209,7 @@ pub trait FifoImpl<T> {
     fn try_recv(&self, storage: &mut dyn StorageCompat<T>) -> usize;
     fn insert_waker(&self, waker: Box<Waker>, v: usize);
     fn take_waker(&self, v: usize) -> Option<Box<Waker>>;
-    fn is_closed(&self) -> bool;
+    fn no_producers(&self) -> bool;
     fn inc_num_prod(&self);
     fn dec_num_prod(&self);
 }
@@ -363,7 +363,7 @@ impl<const L: usize, const F: usize, T> FifoImpl<T> for Fifo<L, F, T> {
         self.wakers[v].try_take(false)
     }
 
-    fn is_closed(&self) -> bool {
+    fn no_producers(&self) -> bool {
         self.num_prod.load(SeqCst) == 0
     }
 

@@ -50,6 +50,25 @@ pub type FillExact<'a, T> = Fill<'a, &'a mut [T], T>;
 /// Future for Fifo consumption of `N` items
 pub type FillMany<'a, T> = Fill<'a, &'a mut Vec<T>, T>;
 
+/// Asynchronous equivalent of `try_recv_*` methods
+///
+/// # Example
+///
+/// ```rust
+/// let (tx, [rx]) = async_fifo::new();
+/// 
+/// tx.send_iter(['a', 'b', 'c', 'd', 'e', 'f']);
+/// core::mem::drop(tx);
+/// 
+/// let _task = async move {
+///     while let Ok(array) = rx.recv_array::<3>().await {
+///         println!("Pulled 3 items: {:?}", array);
+///     }
+/// 
+///     // Err(Closed) is returned if all producers have been
+///     // dropped AND all items have been consumed.
+/// };
+/// ```
 impl<T: Unpin> Consumer<T> {
     /// Receives one item, asynchronously.
     pub fn recv(&self) -> RecvOne<'_, T> {
@@ -57,11 +76,13 @@ impl<T: Unpin> Consumer<T> {
     }
 
     /// Receives as many items as possible, into a vector, asynchronously.
+    ///
+    /// The number of received items is returned.
     pub fn recv_many<'a>(&'a self, vec: &'a mut Vec<T>) -> FillMany<'a, T> {
         self.into_fill(vec)
     }
 
-    /// Receives exactly `N` items into an array, asynchronously.
+    /// Receives exactly `slice.len()` items into a slice, asynchronously.
     pub fn recv_exact<'a>(&'a self, slice: &'a mut [T]) -> FillExact<'a, T> {
         self.into_fill(slice)
     }
@@ -95,7 +116,7 @@ fn set_waker_check_closed<T>(
     cx: &mut Context<'_>,
     consumer: &Consumer<T>,
 ) -> bool {
-    if consumer.is_closed() {
+    if consumer.no_producers() {
         return true;
     }
 
@@ -112,7 +133,7 @@ fn set_waker_check_closed<T>(
     consumer.insert_waker(waker);
 
     // maybe it was closed while we were inserting our waker
-    consumer.is_closed()
+    consumer.no_producers()
 }
 
 impl<'a, S: RecvStorage<T>, T> Future for Recv<'a, S, T> {
@@ -175,31 +196,24 @@ impl<'a, T: Unpin, S: FillStorage<T>> Future for Fill<'a, S, T> {
 }
 
 #[cfg(any(feature = "blocking", doc))]
+/// These methods are only available if you enable the `blocking` feature.
 impl<T: Unpin> Consumer<T> {
     /// Receives one item, blocking.
-    ///
-    /// This method is only available if you enable the `blocking` feature.
     pub fn recv_blocking(&self) -> Result<T, Closed> {
         crate::blocking::block_on(self.recv())
     }
 
-    /// Receives some items into an array, blocking.
-    ///
-    /// This method is only available if you enable the `blocking` feature.
+    /// Receives exactly `N` items into an array, blocking.
     pub fn recv_array_blocking<const N: usize>(&self) -> Result<[T; N], Closed> {
         crate::blocking::block_on(self.recv_array())
     }
 
     /// Receives as many items as possible, into a vector, blocking.
-    ///
-    /// This method is only available if you enable the `blocking` feature.
     pub fn recv_many_blocking(&self, vec: &mut Vec<T>) -> Result<usize, Closed> {
         crate::blocking::block_on(self.recv_many(vec))
     }
 
-    /// Fills a mutable slice with received items, blocking.
-    ///
-    /// This method is only available if you enable the `blocking` feature.
+    /// Receives exactly `slice.len()` items into a slice, blocking.
     pub fn recv_exact_blocking(&self, slice: &mut [T]) -> Result<usize, Closed> {
         crate::blocking::block_on(self.recv_exact(slice))
     }
