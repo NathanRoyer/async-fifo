@@ -1,6 +1,6 @@
 #[test]
 fn test_one() {
-    let (tx, [rx]) = super::new();
+    let (tx, rx) = super::new();
 
     tx.send("Test");
     let results = rx.try_recv();
@@ -13,7 +13,7 @@ fn test_one() {
 
 #[test]
 fn test_zero_sized() {
-    let (tx, [rx]) = super::new();
+    let (tx, rx) = super::new();
     let array = [(); 16];
 
     tx.send_iter(array.iter().cloned());
@@ -27,7 +27,7 @@ fn test_zero_sized() {
 
 #[test]
 fn test_multiple() {
-    let (tx, [rx]) = super::new();
+    let (tx, rx) = super::new();
 
     let to_send: alloc::vec::Vec<_> = (0..12).collect();
     tx.send_iter(to_send.clone().into_iter());
@@ -43,7 +43,7 @@ fn test_multiple() {
 
 #[test]
 fn test_10k() {
-    let (tx, [rx]) = super::new();
+    let (tx, rx) = super::new();
 
     let to_send: alloc::vec::Vec<_> = (0..10000).collect();
     tx.send_iter(to_send.iter().cloned());
@@ -61,7 +61,7 @@ fn test_10k() {
 fn test_multi_steps() {
     use alloc::vec::Vec;
 
-    let (tx, [rx]) = super::BlockSize::<256, 32>::build();
+    let (tx, rx) = crate::fifo::BlockSize::<256, 32>::channel();
     let mut results = Vec::new();
     let mut input = Vec::new();
 
@@ -84,7 +84,7 @@ fn test_multi_thread_inner() {
     use alloc::vec::Vec;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    let (producer, mut consumers) = super::new_vec(12);
+    let (producer, consumer) = super::new();
     let total_consumed = Arc::new(AtomicUsize::new(0));
 
     let sends = 120;
@@ -106,8 +106,8 @@ fn test_multi_thread_inner() {
         handles.push(std::thread::spawn(thread_fn));
     }
 
-    for _ in 0..consumers.len() {
-        let rx = consumers.remove(0);
+    for _ in 0..12 {
+        let rx = consumer.clone();
         let total_consumed = total_consumed.clone();
         let to_send = to_send.clone();
 
@@ -142,7 +142,7 @@ fn test_multi_thread_blocking() {
     use alloc::sync::Arc;
     use alloc::vec::Vec;
 
-    let (producer, [consumer]) = super::new();
+    let (producer, consumer) = super::new();
     let total_consumed = Arc::new(AtomicUsize::new(0));
 
     let sends = 120;

@@ -1,122 +1,11 @@
+use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::Ordering::SeqCst;
 use core::array::from_fn;
-use core::task::Waker;
 
-use crate::slot::AtomicSlot;
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use super::block::{Fifo, FifoImpl};
-use super::storage::TmpArray;
-use super::Storage;
-
-#[derive(Default)]
-/// Custom Block Size
-///
-/// In channels, items are stored in contiguous blocks (chunks) of item slots.
-/// New blocks are allocated as items are send through the channel.
-/// A large block size will result in less but bigger allocations.
-/// A small block size will result in more, smaller allocations.
-/// For channels transporting large amounts of items, a large block size is preferred.
-/// This structure allows you to create channels with custom block size (chunk length).
-///
-/// See the following pre-defined block sizes:
-/// - [`SmallBlockSize`]: 8 slots per block
-/// - [`DefaultBlockSize`]: 32 slots per block
-/// - [`LargeBlockSize`]: 4096 slots per block
-/// - [`HugeBlockSize`]: 1048576 slots per block
-///
-/// L must be equal to F x 8
-pub struct BlockSize<const L: usize, const F: usize>;
-
-impl<const L: usize, const F: usize> BlockSize<L, F> {
-    fn build_n<T: 'static>(num_rx: usize) -> (Producer<T>, Arc<dyn FifoImpl<T>>) {
-        assert_eq!(F * 8, L);
-        let wakers = (0..num_rx).map(|_| AtomicSlot::default()).collect();
-        let fifo: Fifo<L, F, T> = Fifo::new(Vec::into(wakers));
-
-        let arc = Arc::new(fifo);
-
-        let producer = Producer {
-            fifo: arc.clone(),
-        };
-
-        (producer, arc)
-    }
-
-    /// Creates a Fifo with this block size.
-    ///
-    /// `N` is the number of consumers.
-    ///
-    /// Panics if `F` isn't equal to `L / 8`;
-    pub fn build<const N: usize, T: 'static>() -> (Producer<T>, [Consumer<T>; N]) {
-        let (tx, fifo) = Self::build_n::<T>(N);
-
-        let rx_array = from_fn(|i| Consumer {
-            fifo: fifo.clone(),
-            waker_index: i,
-        });
-
-        (tx, rx_array)
-    }
-
-    pub fn build_vec<T: 'static>(num_rx: usize) -> (Producer<T>, Vec<Consumer<T>>) {
-        let (tx, fifo) = Self::build_n::<T>(num_rx);
-        let mut rx_vec = Vec::with_capacity(num_rx);
-
-        for i in 0..num_rx {
-            rx_vec.push(Consumer {
-                fifo: fifo.clone(),
-                waker_index: i,
-            })
-        }
-
-        (tx, rx_vec)
-    }
-
-    pub fn build_box<const N: usize, T: 'static>() -> (Producer<T>, Box<[Consumer<T>; N]>) {
-        let (tx, rx_vec) = Self::build_vec::<T>(N);
-        match Box::try_from(rx_vec) {
-            Ok(rx_box) => (tx, rx_box),
-            Err(_) => unreachable!()
-        }
-    }
-}
-
-/// Block size suitable for sending items one by one, from time to time
-///
-/// Each block will have 8 slots.
-pub type SmallBlockSize = BlockSize<8, 1>;
-
-/// Reasonable default block size
-///
-/// Each block will have 32 slots.
-pub type DefaultBlockSize = BlockSize<32, 4>;
-
-/// Block size suitable for batch sending of many items
-///
-/// Each block will have 4096 slots.
-pub type LargeBlockSize = BlockSize<4096, 512>;
-
-/// Block size suitable for batch sending of tons of items
-///
-/// Each block will have 1 048 576 slots.
-pub type HugeBlockSize = BlockSize<1048576, 131072>;
-
-/// Creates a Fifo with default block size (Array of Consumers)
-pub fn new<const N: usize, T: 'static>() -> (Producer<T>, [Consumer<T>; N]) {
-    DefaultBlockSize::build()
-}
-
-/// Creates a Fifo with default block size (Vec of Consumers)
-pub fn new_vec<T: 'static>(num_consumers: usize) -> (Producer<T>, Vec<Consumer<T>>) {
-    DefaultBlockSize::build_vec::<T>(num_consumers)
-}
-
-/// Creates a Fifo with default block size (Boxed Array of Consumers)
-pub fn new_box<const N: usize, T: 'static>() -> (Producer<T>, Box<[Consumer<T>; N]>) {
-    DefaultBlockSize::build_box::<N, T>()
-}
+use crate::fifo::{FifoApi, Storage, TmpArray, BlockSize};
 
 /// Fifo Production Handle
 ///
@@ -132,7 +21,7 @@ pub fn new_box<const N: usize, T: 'static>() -> (Producer<T>, Box<[Consumer<T>; 
 /// # Example
 ///
 /// ```rust
-/// let (tx, [rx]) = async_fifo::new();
+/// let (tx, rx) = async_fifo::new();
 /// 
 /// // Sending items one by one
 /// tx.send('a');
@@ -158,22 +47,23 @@ pub fn new_box<const N: usize, T: 'static>() -> (Producer<T>, Box<[Consumer<T>; 
 /// assert_eq!(rx.try_recv(), None);
 /// ```
 pub struct Producer<T> {
-    fifo: Arc<dyn FifoImpl<T>>,
+    fifo: Arc<dyn FifoApi<T>>,
+    num_prod: Arc<AtomicUsize>,
 }
 
 impl<T> Clone for Producer<T> {
     fn clone(&self) -> Self {
-        let fifo = self.fifo.clone();
-        fifo.inc_num_prod();
+        self.num_prod.fetch_add(1, SeqCst);
         Self {
-            fifo,
+            fifo: self.fifo.clone(),
+            num_prod: self.num_prod.clone(),
         }
     }
 }
 
 impl<T> Drop for Producer<T> {
     fn drop(&mut self) {
-        self.fifo.dec_num_prod();
+        self.num_prod.fetch_sub(1, SeqCst);
     }
 }
 
@@ -186,8 +76,7 @@ impl<T> Producer<T> {
         I: IntoIterator,
         I::IntoIter: ExactSizeIterator<Item = T>,
     {
-        let mut iter = into_iter.into_iter();
-        self.fifo.send_iter(&mut iter);
+        self.fifo.push(&mut into_iter.into_iter());
     }
 
     /// Sends one item through the channel.
@@ -211,16 +100,11 @@ impl<T> Producer<T> {
 /// available in the FIFO.
 ///
 /// Items are pulled in the exact same order as they were pushed.
+#[derive(Clone)]
 pub struct Consumer<T> {
-    pub(super) fifo: Arc<dyn FifoImpl<T>>,
-    waker_index: usize,
+    fifo: Arc<dyn FifoApi<T>>,
+    num_prod: Arc<AtomicUsize>,
 }
-
-unsafe impl<T> Send for Producer<T> {}
-unsafe impl<T> Sync for Producer<T> {}
-
-unsafe impl<T> Send for Consumer<T> {}
-unsafe impl<T> Sync for Consumer<T> {}
 
 impl<T> Consumer<T> {
     /// Returns true if all producers have been dropped
@@ -228,7 +112,7 @@ impl<T> Consumer<T> {
     /// # Example
     ///
     /// ```rust
-    /// let (tx, [rx]) = async_fifo::new();
+    /// let (tx, rx) = async_fifo::new();
     /// tx.send('z');
     ///
     /// // one remaining producer
@@ -246,12 +130,7 @@ impl<T> Consumer<T> {
     ///
     /// ```
     pub fn no_producers(&self) -> bool {
-        self.fifo.no_producers()
-    }
-
-    #[doc(hidden)]
-    pub fn is_closed(&self) -> bool {
-        self.no_producers()
+        self.num_prod.load(SeqCst) == 0
     }
 
     /// Tries to receive one item.
@@ -259,7 +138,7 @@ impl<T> Consumer<T> {
     /// # Example
     ///
     /// ```rust
-    /// let (tx, [rx]) = async_fifo::new();
+    /// let (tx, rx) = async_fifo::new();
     /// tx.send_iter(['a', 'b', 'c']);
     /// 
     /// // Receive one by one
@@ -280,7 +159,7 @@ impl<T> Consumer<T> {
     /// # Example
     ///
     /// ```rust
-    /// let (tx, [rx]) = async_fifo::new();
+    /// let (tx, rx) = async_fifo::new();
     /// tx.send_iter(['a', 'b', 'c', 'd']);
     /// 
     /// // Pull as much as possible into a vec
@@ -299,7 +178,7 @@ impl<T> Consumer<T> {
     /// # Example
     ///
     /// ```rust
-    /// let (tx, [rx]) = async_fifo::new();
+    /// let (tx, rx) = async_fifo::new();
     /// tx.send_iter(['a', 'b', 'c']);
     /// 
     /// // Pull a specific amount into a slice
@@ -317,7 +196,7 @@ impl<T> Consumer<T> {
     /// # Example
     ///
     /// ```rust
-    /// let (tx, [rx]) = async_fifo::new();
+    /// let (tx, rx) = async_fifo::new();
     /// tx.send_iter(['a', 'b', 'c']);
     /// 
     /// // Pull a specific amount into an array
@@ -334,17 +213,30 @@ impl<T> Consumer<T> {
 
     /// Tries to receive some items into custom storage.
     pub fn try_recv_into<S: Storage<T>>(&self, mut storage: S) -> Result<S::Output, S> {
-        let pushed = self.fifo.try_recv(&mut storage);
+        let pushed = self.fifo.pull(&mut storage);
         storage.finish(pushed)
     }
 
-    /// Sets the waker of the current task, to be woken up when new items are available.
-    pub fn insert_waker(&self, waker: Box<Waker>) {
-        self.fifo.insert_waker(waker, self.waker_index);
+    pub(crate) fn fifo(&self) -> &dyn FifoApi<T> {
+        &*self.fifo
     }
+}
 
-    /// Tries to take back a previously inserted waker.
-    pub fn take_waker(&self) -> Option<Box<Waker>> {
-        self.fifo.take_waker(self.waker_index)
+impl<const L: usize, const F: usize> BlockSize<L, F> {
+    pub fn non_blocking<T: 'static>() -> (Producer<T>, Consumer<T>) {
+        let fifo = Self::arc_fifo();
+        let num_prod = Arc::new(AtomicUsize::new(1));
+
+        let producer = Producer {
+            fifo: fifo.clone(),
+            num_prod: num_prod.clone(),
+        };
+
+        let consumer = Consumer {
+            fifo: fifo,
+            num_prod: num_prod,
+        };
+
+        (producer, consumer)
     }
 }
