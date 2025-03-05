@@ -4,8 +4,9 @@ mod api;
 mod tests;
 mod async_api;
 
-pub use api::{Producer, Consumer, new, with_block_size};
-pub use async_api::{Recv, RecvOne, RecvExact, AsyncStorage};
+pub use api::{Producer, Consumer, BlockSize, new, new_vec, new_box};
+pub use api::{SmallBlockSize, DefaultBlockSize, LargeBlockSize, HugeBlockSize};
+pub use async_api::{Closed, Recv, RecvOne, RecvExact, AsyncStorage};
 
 /// Backing storage for receive operations
 pub trait Storage<T> {

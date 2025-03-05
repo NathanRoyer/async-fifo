@@ -9,44 +9,117 @@ use alloc::vec::Vec;
 use super::block::{Fifo, FifoImpl};
 use super::{Storage, TmpArray};
 
-/// Creates a Fifo with custom block size.
+#[derive(Default)]
+/// Custom Block Size
 ///
-/// `L` is the block size.
-/// `F` must be the block size divided by 8.
+/// In channels, items are stored in contiguous blocks (chunks) of item slots.
+/// New blocks are allocated as items are send through the channel.
+/// A large block size will result in less but bigger allocations.
+/// A small block size will result in more, smaller allocations.
+/// For channels transporting large amounts of items, a large block size is preferred.
+/// This structure allows you to create channels with custom block size (chunk length).
 ///
-/// Panics if `F` isn't equal to `L / 8`;
-pub fn with_block_size<
-    const C: usize,
-    const L: usize,
-    const F: usize,
-    T: 'static,
->() -> (Producer<T>, [Consumer<T>; C]) {
-    assert_eq!(F * 8, L);
-    let mut wakers = Vec::with_capacity(C);
+/// See the following pre-defined block sizes:
+/// - [`SmallBlockSize`]
+/// - [`DefaultBlockSize`]
+/// - [`LargeBlockSize`]
+/// - [`HugeBlockSize`]
+///
+/// L must be equal to F x 8
+pub struct BlockSize<const L: usize, const F: usize>;
 
-    for _ in 0..C {
-        wakers.push(AtomicSlot::default());
+impl<const L: usize, const F: usize> BlockSize<L, F> {
+    fn build_n<const N: usize, T: 'static>() -> (Producer<T>, Arc<dyn FifoImpl<T>>) {
+        assert_eq!(F * 8, L);
+        let mut wakers = Vec::with_capacity(N);
+
+        for _ in 0..N {
+            wakers.push(AtomicSlot::default());
+        }
+
+        let fifo: Fifo<L, F, T> = Fifo::new(wakers.into());
+
+        let arc = Arc::new(fifo);
+
+        let producer = Producer {
+            fifo: arc.clone(),
+        };
+
+        (producer, arc)
     }
 
-    let fifo: Fifo<L, F, T> = Fifo::new(wakers.into());
+    /// Creates a Fifo with this block size.
+    ///
+    /// `N` is the number of consumers.
+    ///
+    /// Panics if `F` isn't equal to `L / 8`;
+    pub fn build<const N: usize, T: 'static>() -> (Producer<T>, [Consumer<T>; N]) {
+        let (tx, fifo) = Self::build_n::<N, T>();
 
-    let arc = Arc::new(fifo);
+        let rx_array = from_fn(|i| Consumer {
+            fifo: fifo.clone(),
+            waker_index: i,
+        });
 
-    let consumer = |i| Consumer {
-        fifo: arc.clone(),
-        waker_index: i,
-    };
+        (tx, rx_array)
+    }
 
-    let producer = Producer {
-        fifo: arc.clone(),
-    };
+    pub fn build_vec<const N: usize, T: 'static>() -> (Producer<T>, Vec<Consumer<T>>) {
+        let (tx, fifo) = Self::build_n::<N, T>();
+        let mut rx_vec = Vec::with_capacity(N);
 
-    (producer, from_fn(consumer))
+        for i in 0..N {
+            rx_vec.push(Consumer {
+                fifo: fifo.clone(),
+                waker_index: i,
+            })
+        }
+
+        (tx, rx_vec)
+    }
+
+    pub fn build_box<const N: usize, T: 'static>() -> (Producer<T>, Box<[Consumer<T>; N]>) {
+        let (tx, rx_vec) = Self::build_vec::<N, T>();
+        match Box::try_from(rx_vec) {
+            Ok(rx_box) => (tx, rx_box),
+            Err(_) => unreachable!()
+        }
+    }
 }
 
-/// Creates a Fifo with reasonable default parameters.
-pub fn new<const C: usize, T: 'static>() -> (Producer<T>, [Consumer<T>; C]) {
-    with_block_size::<C, 32, 4, T>()
+/// Block size suitable for sending items one by one, from time to time
+///
+/// Each block will have 8 slots.
+pub type SmallBlockSize = BlockSize<8, 1>;
+
+/// Reasonable default block size
+///
+/// Each block will have 32 slots.
+pub type DefaultBlockSize = BlockSize<32, 4>;
+
+/// Block size suitable for batch sending of many items
+///
+/// Each block will have 4096 slots.
+pub type LargeBlockSize = BlockSize<4096, 512>;
+
+/// Block size suitable for batch sending of tons of items
+///
+/// Each block will have 1 048 576 slots.
+pub type HugeBlockSize = BlockSize<1048576, 131072>;
+
+/// Creates a Fifo with default block size (Array of Consumers)
+pub fn new<const N: usize, T: 'static>() -> (Producer<T>, [Consumer<T>; N]) {
+    DefaultBlockSize::build()
+}
+
+/// Creates a Fifo with default block size (Vec of Consumers)
+pub fn new_vec<const N: usize, T: 'static>() -> (Producer<T>, Vec<Consumer<T>>) {
+    DefaultBlockSize::build_vec::<N, T>()
+}
+
+/// Creates a Fifo with default block size (Boxed Array of Consumers)
+pub fn new_box<const N: usize, T: 'static>() -> (Producer<T>, Box<[Consumer<T>; N]>) {
+    DefaultBlockSize::build_box::<N, T>()
 }
 
 /// Fifo Production Handle (implements `Clone`)
