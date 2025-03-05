@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 
 use crate::slot::AtomicSlot;
 use super::block_ptr::{BlockPointer, CollectedBlock};
-use super::Storage;
+use super::StorageApi;
 
 type Slot<T> = UnsafeCell<MaybeUninit<T>>;
 pub type RecycleBin<const L: usize, const F: usize, T> = Vec<CollectedBlock<L, F, T>>;
@@ -203,7 +203,7 @@ impl<const L: usize, const F: usize, T> Fifo<L, F, T> {
 
 pub trait FifoImpl<T> {
     fn send_iter(&self, iter: &mut dyn ExactSizeIterator<Item = T>);
-    fn try_recv(&self, storage: &mut dyn Storage<T>) -> usize;
+    fn try_recv(&self, storage: &mut dyn StorageApi<T>) -> usize;
     fn insert_waker(&self, waker: Box<Waker>, v: usize);
     fn take_waker(&self, v: usize) -> Option<Box<Waker>>;
     fn is_closed(&self) -> bool;
@@ -270,7 +270,7 @@ impl<const L: usize, const F: usize, T> FifoImpl<T> for Fifo<L, F, T> {
         }
     }
 
-    fn try_recv(&self, storage: &mut dyn Storage<T>) -> usize {
+    fn try_recv(&self, storage: &mut dyn StorageApi<T>) -> usize {
         let (min, max) = storage.bounds();
         let max = max.unwrap_or(usize::MAX);
         let min = min.unwrap_or(0);

@@ -6,7 +6,7 @@ fn test_one() {
     tx.send("Test");
     let results = rx.try_recv_many();
 
-    assert_eq!(results, vec!["Test"]);
+    assert_eq!(results, Some(vec!["Test"]));
 }
 
 #[test]
@@ -17,7 +17,7 @@ fn test_zero_sized() {
     tx.send_iter(array.iter().cloned());
     let results = rx.try_recv_many();
 
-    assert_eq!(&*results, array.as_slice());
+    assert_eq!(results.as_deref(), Some(array.as_slice()));
 }
 
 #[test]
@@ -29,7 +29,7 @@ fn test_many() {
 
     let results = rx.try_recv_many();
 
-    assert_eq!(results, to_send);
+    assert_eq!(results, Some(to_send));
 }
 
 #[test]
@@ -41,7 +41,7 @@ fn test_awful_lot() {
 
     let results = rx.try_recv_many();
 
-    assert_eq!(results, to_send);
+    assert_eq!(results, Some(to_send));
 }
 
 #[test]
@@ -55,7 +55,9 @@ fn test_multi_steps() {
         let to_send: alloc::vec::Vec<_> = (0..100).collect();
         tx.send_iter(to_send.clone().into_iter());
         input.extend(to_send);
-        results.extend(rx.try_recv_many());
+        if let Some(res) = rx.try_recv_many() {
+            results.extend(res);
+        }
     }
 
     assert_eq!(results, input);
