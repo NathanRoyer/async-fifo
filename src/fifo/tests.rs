@@ -8,7 +8,7 @@ fn test_one() {
     assert_eq!(results, Some("Test"));
 
     core::mem::drop(tx);
-    assert!(rx.is_closed());
+    assert!(rx.no_producers());
 }
 
 #[test]
@@ -22,7 +22,7 @@ fn test_zero_sized() {
     assert_eq!(results, Some(array));
 
     core::mem::drop(tx);
-    assert!(rx.is_closed());
+    assert!(rx.no_producers());
 }
 
 #[test]
@@ -38,7 +38,7 @@ fn test_multiple() {
     assert_eq!(results, to_send);
 
     core::mem::drop(tx);
-    assert!(rx.is_closed());
+    assert!(rx.no_producers());
 }
 
 #[test]
@@ -54,7 +54,7 @@ fn test_10k() {
     assert_eq!(results, to_send);
 
     core::mem::drop(tx);
-    assert!(rx.is_closed());
+    assert!(rx.no_producers());
 }
 
 #[test]
@@ -75,7 +75,7 @@ fn test_multi_steps() {
     assert_eq!(results, input);
 
     core::mem::drop(tx);
-    assert!(rx.is_closed());
+    assert!(rx.no_producers());
 }
 
 #[cfg(test)]

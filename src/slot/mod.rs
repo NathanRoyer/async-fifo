@@ -1,3 +1,24 @@
+//! # One shot SPSC channels
+//! 
+//! Very simple single-use channels with a sync and async API, blocking/non-blocking.
+//! This builds on `AtomicSlot<T>`, so the item has to be boxed.
+//! Most useful for the transfer of return values in the context of remote procedure calling, as "reply pipes".
+//! 
+//! ```rust
+//! let (tx, rx) = async_fifo::slot::oneshot();
+//! let item = "Hello, world!";
+//! tx.send(Box::new(item));
+//! 
+//! let _task = async {
+//!     assert_eq!(*rx.await, item);
+//! };
+//! ```
+//! 
+//! # `AtomicSlot<T>`
+//! 
+//! You can atomically swap the contents of this slot from any thread.
+//! Think of it as `Mutex<Option<Box<T>>>` without any actual locking.
+
 use core::sync::atomic::Ordering::SeqCst;
 use core::sync::atomic::AtomicPtr;
 use core::ptr::null_mut;

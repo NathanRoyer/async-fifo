@@ -1,4 +1,14 @@
-#![doc = include_str!("../README.md")]
+//! This crate implements three lock-free structures for object transfers:
+//! 
+//! - fully-featured MPMC channels (in the [`fifo`] module)
+//! - small one-shot SPSC channels (in the [`slot`] module)
+//! - an `AtomicSlot<T>` type (in the [`slot`] module)
+//! 
+//! All of these structures are synchronized without any locks and without spinning/yielding.
+//! This crate is compatible with `no_std` targets, except for the `*_blocking` methods.
+//!
+//! (All items of the `fifo` module are re-exported here.)
+
 #![no_std]
 
 #[cfg(any(test, feature = "blocking", doc))]
@@ -15,7 +25,6 @@ pub mod slot;
 /// First-in, first-out MPMC channels (all items re-exported at crate root)
 pub mod fifo;
 
-#[doc(hidden)]
 pub use fifo::*;
 
 #[cfg(any(feature = "blocking", doc))]
