@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 
 use crate::slot::AtomicSlot;
 use super::block_ptr::{BlockPointer, CollectedBlock};
-use super::StorageApi;
+use super::StorageCompat;
 
 type Slot<T> = UnsafeCell<MaybeUninit<T>>;
 pub type RecycleBin<const L: usize, const F: usize, T> = Vec<CollectedBlock<L, F, T>>;
@@ -66,7 +66,7 @@ fn get_slot_flag<const F: usize>(slot_flags: &[AtomicU8; F], i: usize) -> bool {
     (slot_flags[i / 8].load(SeqCst) & mask) > 0
 }
 
-fn try_xchg_int(atomic_int: &AtomicUsize, old: usize, new: usize) -> bool {
+fn try_swap_int(atomic_int: &AtomicUsize, old: usize, new: usize) -> bool {
     atomic_int.compare_exchange(old, new, SeqCst, Relaxed).is_ok()
 }
 
@@ -127,52 +127,55 @@ impl<const L: usize, const F: usize, T> Fifo<L, F, T> {
     }
 
     fn try_maintain(&self) {
-        if let Some(mut bin) = self.recycle_bin.try_take(false) {
-            let current_rev = self.revision.load(SeqCst) as usize;
-            let oldest_rev = current_rev.saturating_sub(REV_CAP - 1);
+        let Some(mut bin) = self.recycle_bin.try_take(false) else {
+            // another thread is already trying to recycle the first block
+            return;
+        };
 
-            // find the oldest revision that still has at least one visitor
-            let mut oldest_visited_rev = current_rev;
-            for rev in oldest_rev..current_rev {
-                let rc_slot = rev % REV_CAP;
-                if self.visitors[rc_slot].load(SeqCst) != 0 {
-                    oldest_visited_rev = rev;
-                    break;
-                }
+        let current_rev = self.revision.load(SeqCst) as usize;
+        let oldest_rev = current_rev.saturating_sub(REV_CAP - 1);
+
+        // find the oldest revision that still has at least one visitor
+        let mut oldest_visited_rev = current_rev;
+        for rev in oldest_rev..current_rev {
+            let rc_slot = rev % REV_CAP;
+            if self.visitors[rc_slot].load(SeqCst) != 0 {
+                oldest_visited_rev = rev;
+                break;
             }
-
-            let next_rev = current_rev + 1;
-            let oldest_used_slot = oldest_visited_rev % REV_CAP;
-            let next_slot = next_rev % REV_CAP;
-            let can_increment = next_slot != oldest_used_slot;
-
-            let mut i = 0;
-            while i < bin.len() {
-                if bin[i].revision < oldest_visited_rev {
-                    // quick, recycle these blocks, before we switch
-                    // to that refcount slot
-                    let block = bin.remove(i);
-                    self.first_block.recycle(block);
-                } else {
-                    i += 1;
-                }
-            }
-
-            if can_increment {
-                let mut has_collected = false;
-
-                while let Some(block) = self.first_block.try_collect(current_rev) {
-                    bin.push(block);
-                    has_collected = true;
-                }
-
-                if has_collected {
-                    self.revision.store(next_rev as u32, SeqCst);
-                }
-            }
-
-            assert!(self.recycle_bin.try_insert(bin).is_ok());
         }
+
+        let next_rev = current_rev + 1;
+        let oldest_used_slot = oldest_visited_rev % REV_CAP;
+        let next_slot = next_rev % REV_CAP;
+        let can_increment = next_slot != oldest_used_slot;
+
+        let mut i = 0;
+        while i < bin.len() {
+            if bin[i].revision < oldest_visited_rev {
+                // quick, recycle these blocks, before we switch
+                // to that refcount slot
+                let block = bin.remove(i);
+                self.first_block.recycle(block);
+            } else {
+                i += 1;
+            }
+        }
+
+        if can_increment {
+            let mut has_collected = false;
+
+            while let Some(block) = self.first_block.try_collect(current_rev) {
+                bin.push(block);
+                has_collected = true;
+            }
+
+            if has_collected {
+                self.revision.store(next_rev as u32, SeqCst);
+            }
+        }
+
+        assert!(self.recycle_bin.try_insert(bin).is_ok());
     }
 
     // visit must be ongoing
@@ -203,7 +206,7 @@ impl<const L: usize, const F: usize, T> Fifo<L, F, T> {
 
 pub trait FifoImpl<T> {
     fn send_iter(&self, iter: &mut dyn ExactSizeIterator<Item = T>);
-    fn try_recv(&self, storage: &mut dyn StorageApi<T>) -> usize;
+    fn try_recv(&self, storage: &mut dyn StorageCompat<T>) -> usize;
     fn insert_waker(&self, waker: Box<Waker>, v: usize);
     fn take_waker(&self, v: usize) -> Option<Box<Waker>>;
     fn is_closed(&self) -> bool;
@@ -270,7 +273,7 @@ impl<const L: usize, const F: usize, T> FifoImpl<T> for Fifo<L, F, T> {
         }
     }
 
-    fn try_recv(&self, storage: &mut dyn StorageApi<T>) -> usize {
+    fn try_recv(&self, storage: &mut dyn StorageCompat<T>) -> usize {
         let (min, max) = storage.bounds();
         let max = max.unwrap_or(usize::MAX);
         let min = min.unwrap_or(0);
@@ -292,7 +295,7 @@ impl<const L: usize, const F: usize, T> FifoImpl<T> for Fifo<L, F, T> {
                 negotiated = 0;
             }
 
-            success = try_xchg_int(&self.cons_cursor, i, i + negotiated);
+            success = try_swap_int(&self.cons_cursor, i, i + negotiated);
         }
 
         storage.reserve(negotiated);
