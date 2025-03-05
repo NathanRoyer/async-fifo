@@ -70,6 +70,8 @@ fn try_xchg_int(atomic_int: &AtomicUsize, old: usize, new: usize) -> bool {
     atomic_int.compare_exchange(old, new, SeqCst, Relaxed).is_ok()
 }
 
+const REV_CAP: usize = 2;
+
 pub struct Fifo<const L: usize, const F: usize, T> {
     // updated by consumers when they collect fully consumed first blocks
     first_block: BlockPointer<L, F, T>,
@@ -81,17 +83,14 @@ pub struct Fifo<const L: usize, const F: usize, T> {
     revision: AtomicUsize,
     // Shared recycle bin for collected blocks
     recycle_bin: AtomicSlot<RecycleBin<L, F, T>>,
-    // each visitor's current visit revision
-    visitors: Box<[AtomicUsize]>,
+    // ringbuf of visitors per revision
+    visitors: [AtomicUsize; REV_CAP],
     // the wakers of pending consumers
     wakers: Box<[AtomicSlot<Waker>]>,
 }
 
 impl<const L: usize, const F: usize, T> Fifo<L, F, T> {
-    pub fn new(
-        visitors: Box<[AtomicUsize]>,
-        wakers: Box<[AtomicSlot<Waker>]>,
-    ) -> Self {
+    pub fn new(wakers: Box<[AtomicSlot<Waker>]>) -> Self {
         let recycle_bin = Box::new(RecycleBin::new());
         Self {
             first_block: BlockPointer::new(),
@@ -99,18 +98,76 @@ impl<const L: usize, const F: usize, T> Fifo<L, F, T> {
             cons_cursor: AtomicUsize::new(0),
             revision: AtomicUsize::new(0),
             recycle_bin: AtomicSlot::new(recycle_bin),
-            visitors,
+            visitors: from_fn(|_| AtomicUsize::new(0)),
             wakers,
         }
     }
 
-    fn init_visit(&self, visitor_index: usize) {
-        let rev = self.revision.load(SeqCst);
-        self.visitors[visitor_index].store(rev, SeqCst);
+    fn init_visit(&self) -> usize {
+        loop {
+            let rev = self.revision.load(SeqCst);
+            let rev_refcount = &self.visitors[rev % REV_CAP];
+            rev_refcount.fetch_add(1, SeqCst);
+
+            match (self.revision.load(SeqCst) - rev) < REV_CAP {
+                true => break rev,
+                // we have written into an already re-used refcount
+                false => _ = rev_refcount.fetch_sub(1, SeqCst),
+            }
+        }
     }
 
-    fn stop_visit(&self, visitor_index: usize) {
-        self.visitors[visitor_index].store(usize::MAX, SeqCst);
+    fn stop_visit(&self, rev: usize) {
+        self.visitors[rev % REV_CAP].fetch_sub(1, SeqCst);
+    }
+
+    fn try_maintain(&self) {
+        if let Some(mut bin) = self.recycle_bin.try_take(false) {
+            let current_rev = self.revision.load(SeqCst);
+            let oldest_rev = current_rev.saturating_sub(REV_CAP - 1);
+
+            // find the oldest revision that still has at least one visitor
+            let mut oldest_visited_rev = current_rev;
+            for rev in oldest_rev..current_rev {
+                let rc_slot = rev % REV_CAP;
+                if self.visitors[rc_slot].load(SeqCst) != 0 {
+                    oldest_visited_rev = rev;
+                    break;
+                }
+            }
+
+            let next_rev = current_rev + 1;
+            let oldest_used_slot = oldest_visited_rev % REV_CAP;
+            let next_slot = next_rev % REV_CAP;
+            let can_increment = next_slot != oldest_used_slot;
+
+            let mut i = 0;
+            while i < bin.len() {
+                if bin[i].revision < oldest_visited_rev {
+                    // quick, recycle these blocks, before we switch
+                    // to that refcount slot
+                    let block = bin.remove(i);
+                    self.first_block.recycle(block);
+                } else {
+                    i += 1;
+                }
+            }
+
+            if can_increment {
+                let mut has_collected = false;
+
+                while let Some(block) = self.first_block.try_collect(current_rev) {
+                    bin.push(block);
+                    has_collected = true;
+                }
+
+                if has_collected {
+                    self.revision.store(next_rev, SeqCst);
+                }
+            }
+
+            assert!(self.recycle_bin.try_insert(bin).is_ok());
+        }
     }
 
     // visit must be ongoing
@@ -137,46 +194,18 @@ impl<const L: usize, const F: usize, T> Fifo<L, F, T> {
 
         total_produced
     }
-
-    fn can_recycle(&self, collected: &CollectedBlock<L, F, T>) -> bool {
-        for visitor in &self.visitors {
-            if visitor.load(SeqCst) <= collected.revision {
-                return false;
-            }
-        }
-
-        true
-    }
-
-    fn try_maintain(&self) {
-        if let Some(mut bin) = self.recycle_bin.try_take(false) {
-            let gen = || self.first_block.try_collect(&self.revision);
-            bin.extend(core::iter::from_fn(gen));
-
-            while let Some(collected) = bin.first() {
-                if self.can_recycle(collected) {
-                    let collected = bin.remove(0);
-                    self.first_block.recycle(collected);
-                } else {
-                    break;
-                }
-            }
-
-            assert!(self.recycle_bin.try_insert(bin).is_ok());
-        }
-    }
 }
 
 pub trait FifoImpl<T> {
-    fn send_iter(&self, iter: &mut dyn ExactSizeIterator<Item = T>, v: usize);
-    fn try_recv(&self, storage: &mut dyn Storage<T>, v: usize) -> usize;
+    fn send_iter(&self, iter: &mut dyn ExactSizeIterator<Item = T>);
+    fn try_recv(&self, storage: &mut dyn Storage<T>) -> usize;
     fn insert_waker(&self, waker: Box<Waker>, v: usize);
     fn take_waker(&self, v: usize) -> Option<Box<Waker>>;
 }
 
 impl<const L: usize, const F: usize, T> FifoImpl<T> for Fifo<L, F, T> {
-    fn send_iter(&self, iter: &mut dyn ExactSizeIterator<Item = T>, v: usize) {
-        self.init_visit(v);
+    fn send_iter(&self, iter: &mut dyn ExactSizeIterator<Item = T>) {
+        let revision = self.init_visit();
 
         let mut remaining = iter.len();
         let mut i = self.prod_cursor.fetch_add(remaining, SeqCst);
@@ -223,7 +252,7 @@ impl<const L: usize, const F: usize, T> FifoImpl<T> for Fifo<L, F, T> {
             maybe_block = &block.next;
         }
 
-        self.stop_visit(v);
+        self.stop_visit(revision);
         self.try_maintain();
 
         for waker_slot in &self.wakers {
@@ -233,11 +262,11 @@ impl<const L: usize, const F: usize, T> FifoImpl<T> for Fifo<L, F, T> {
         }
     }
 
-    fn try_recv(&self, storage: &mut dyn Storage<T>, v: usize) -> usize {
+    fn try_recv(&self, storage: &mut dyn Storage<T>) -> usize {
         let (min, max) = storage.bounds();
         let max = max.unwrap_or(usize::MAX);
         let min = min.unwrap_or(0);
-        self.init_visit(v);
+        let revision = self.init_visit();
 
         let mut success = false;
         let mut i = 0;
@@ -309,7 +338,7 @@ impl<const L: usize, const F: usize, T> FifoImpl<T> for Fifo<L, F, T> {
             maybe_block = &block.next;
         }
 
-        self.stop_visit(v);
+        self.stop_visit(revision);
         self.try_maintain();
 
         negotiated
