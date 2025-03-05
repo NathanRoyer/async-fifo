@@ -55,10 +55,9 @@ impl<const L: usize, const F: usize, T> BlockPointer<L, F, T> {
         this.fully_consumed().then_some(())?;
 
         // the next's block offset
-        if next.offset.load(SeqCst) == 0 {
-            let offset = this.offset.load(SeqCst);
-            next.offset.store(offset + L, SeqCst);
-        }
+        assert_eq!(next.offset.load(SeqCst), 0);
+        let offset = this.offset.load(SeqCst);
+        next.offset.store(offset + L, SeqCst);
 
         let this_ptr = this as *const _ as *mut _;
         let next_ptr = next as *const _ as *mut _;

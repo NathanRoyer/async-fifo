@@ -51,8 +51,8 @@ fn test_multi_steps() {
     assert_eq!(results, input);
 }
 
-#[test]
-fn test_multi_thread() {
+#[allow(dead_code)]
+fn test_multi_thread_inner() {
     use alloc::sync::Arc;
     use alloc::vec::Vec;
     use core::sync::atomic::{AtomicUsize, Ordering};
@@ -100,6 +100,13 @@ fn test_multi_thread() {
 
     for handle in handles {
         let _ = handle.join();
+    }
+}
+
+#[test]
+fn test_multi_thread() {
+    for _ in 0..20 {
+        test_multi_thread_inner();
     }
 }
 
