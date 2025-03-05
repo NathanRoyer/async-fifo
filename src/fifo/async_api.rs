@@ -16,14 +16,14 @@ pub trait AsyncStorage<T>: Storage<T> + Unpin {
 
 /// Future for Fifo consumption
 pub struct Recv<'a, S: AsyncStorage<T>, T> {
-    consumer: &'a mut Consumer<T>,
+    consumer: &'a Consumer<T>,
     storage: Option<S>,
     waker_box: Option<Box<Waker>>,
 }
 
 impl<T: Unpin> Consumer<T> {
     /// Receives some items into custom storage, asynchronously.
-    pub fn recv_into<S: AsyncStorage<T>>(&mut self, storage: S) -> Recv<'_, S, T> {
+    pub fn recv_into<S: AsyncStorage<T>>(&self, storage: S) -> Recv<'_, S, T> {
         Recv {
             consumer: self,
             storage: Some(storage),
@@ -32,17 +32,17 @@ impl<T: Unpin> Consumer<T> {
     }
 
     /// Receives as many items as possible, into a vector, asynchronously.
-    pub fn recv_many(&mut self) -> Recv<'_, Vec<T>, T> {
+    pub fn recv_many(&self) -> Recv<'_, Vec<T>, T> {
         self.recv_into(Vec::new())
     }
 
     /// Receives exactly `N` items into an array, asynchronously.
-    pub fn recv_exact<const N: usize>(&mut self) -> RecvExact<'_, N, T> {
+    pub fn recv_exact<const N: usize>(&self) -> RecvExact<'_, N, T> {
         self.recv_into(TmpArray(from_fn(|_| None)))
     }
 
     /// Receives one item, asynchronously.
-    pub fn recv(&mut self) -> RecvOne<'_, T> {
+    pub fn recv(&self) -> RecvOne<'_, T> {
         self.recv_into(None)
     }
 }
@@ -89,28 +89,28 @@ impl<T: Unpin> Consumer<T> {
     /// Receives some items into custom storage, blocking.
     ///
     /// This method is only available if you enable the `blocking` feature.
-    pub fn recv_into_blocking<S: AsyncStorage<T>>(&mut self, storage: S) -> S::Output {
+    pub fn recv_into_blocking<S: AsyncStorage<T>>(&self, storage: S) -> S::Output {
         crate::blocking::block_on(self.recv_into(storage))
     }
 
     /// Receives as many items as possible, into a vector, blocking.
     ///
     /// This method is only available if you enable the `blocking` feature.
-    pub fn recv_many_blocking(&mut self) -> Vec<T> {
+    pub fn recv_many_blocking(&self) -> Vec<T> {
         crate::blocking::block_on(self.recv_many())
     }
 
     /// Receives exactly `N` items into an array, blocking.
     ///
     /// This method is only available if you enable the `blocking` feature.
-    pub fn recv_exact_blocking<const N: usize>(&mut self) -> [T; N] {
+    pub fn recv_exact_blocking<const N: usize>(&self) -> [T; N] {
         crate::blocking::block_on(self.recv_exact())
     }
 
     /// Receives one item, blocking.
     ///
     /// This method is only available if you enable the `blocking` feature.
-    pub fn recv_blocking(&mut self) -> T {
+    pub fn recv_blocking(&self) -> T {
         crate::blocking::block_on(self.recv())
     }
 }
