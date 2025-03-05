@@ -9,9 +9,13 @@ repository = "https://github.com/NathanRoyer/async-fifo"
 keywords = ["mpmc", "oneshot", "channel", "no_std", "futures"]
 categories = ["concurrency", "asynchronous"]
 
+[dependencies]
+futures-io = { version = "0.3", optional = true }
+
 [dev-dependencies]
 async-io = "2.4"
 futures-lite = "2.6"
 
 [features]
 blocking = []
+async-read = ["futures-io"]

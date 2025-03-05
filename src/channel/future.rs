@@ -72,7 +72,7 @@ impl<T: Unpin> Receiver<T> {
     }
 }
 
-fn set_waker_check_no_prod<T: Unpin>(
+pub(super) fn set_waker_check_no_prod<T: Unpin>(
     cx: &mut Context<'_>,
     receiver: &Receiver<T>,
 ) -> bool {

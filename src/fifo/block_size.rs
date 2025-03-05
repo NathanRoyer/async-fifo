@@ -6,7 +6,7 @@ use super::{Fifo, FifoApi};
 /// Custom Block Size
 ///
 /// In channels, items are stored in contiguous blocks (chunks) of item slots.
-/// New blocks are allocated as items are send through the channel.
+/// New blocks are allocated as items are sent through the channel.
 /// A large block size will result in less but bigger allocations.
 /// A small block size will result in more, smaller allocations.
 /// For channels transporting large amounts of items, a large block size is preferred.

@@ -7,6 +7,7 @@ name = "async-fifo"
 version = "0.6.1"
 dependencies = [
  "async-io",
+ "futures-io",
  "futures-lite",
 ]
 

@@ -34,6 +34,9 @@ pub use oneshot::new as oneshot;
 #[cfg(any(feature = "blocking", test, doc))]
 mod blocking;
 
+#[cfg(any(feature = "async-read", test, doc))]
+mod async_read;
+
 pub mod oneshot;
 
 /// Creates a channel with the default block size
