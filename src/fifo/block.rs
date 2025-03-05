@@ -241,22 +241,25 @@ impl<const L: usize, const F: usize, T> FifoImpl<T> for Fifo<L, F, T> {
 
         let mut success = false;
         let mut i = 0;
-        let mut negociated = 0;
+        let mut negotiated = 0;
 
         while !success {
             let produced = self.produced();
             i = self.cons_cursor.load(SeqCst);
-            negociated = (produced - i).min(max);
+            negotiated = match produced.checked_sub(i) {
+                Some(available) => available.min(max),
+                None => continue,
+            };
 
-            if negociated < min {
-                negociated = 0;
+            if negotiated < min {
+                negotiated = 0;
             }
 
-            success = try_xchg_int(&self.cons_cursor, i, i + negociated);
+            success = try_xchg_int(&self.cons_cursor, i, i + negotiated);
         }
 
-        storage.reserve(negociated);
-        let mut remaining = negociated;
+        storage.reserve(negotiated);
+        let mut remaining = negotiated;
         let mut is_first_block = true;
         let mut block_offset = 0;
         let mut maybe_block = &self.first_block;
@@ -293,7 +296,7 @@ impl<const L: usize, const F: usize, T> FifoImpl<T> for Fifo<L, F, T> {
                     slot_cell.assume_init_read()
                 };
 
-                let storage_index = negociated - remaining;
+                let storage_index = negotiated - remaining;
                 storage.push(storage_index, item);
 
                 set_slot_flag(&block.consumed, slot_i);
@@ -309,7 +312,7 @@ impl<const L: usize, const F: usize, T> FifoImpl<T> for Fifo<L, F, T> {
         self.stop_visit(v);
         self.try_maintain();
 
-        negociated
+        negotiated
     }
 
     fn insert_waker(&self, waker: Box<Waker>, v: usize) {
