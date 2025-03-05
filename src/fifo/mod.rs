@@ -1,3 +1,13 @@
+//! ### Internal Details
+//! 
+//! Fifos internally own a chain of blocks.
+//! 
+//! - blocks have a configurable number of item slots (32 by default)
+//! - they are allocated and appended to the chain by producers
+//! - they are then populated by producers and consumed by consumers
+//! - fully consumed first blocks get recycled and appended again at the end of the chain (when no one is visiting them anymore)
+//! - the fifo has atomic cursors to track which block slots are available for production and consumption
+
 mod block_ptr;
 mod block;
 mod api;
