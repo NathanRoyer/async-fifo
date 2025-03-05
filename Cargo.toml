@@ -2,12 +2,16 @@
 name = "async-fifo"
 description = "MPMC & oneshot channels with (a)sync API"
 authors = ["Nathan Royer <nathan.royer.pro@gmail.com>"]
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/NathanRoyer/async-fifo"
 keywords = ["mpmc", "oneshot", "channel", "no_std", "futures"]
 categories = ["concurrency", "asynchronous"]
+
+[dev-dependencies]
+async-io = "2.4"
+futures-lite = "2.6"
 
 [features]
 blocking = []

@@ -21,17 +21,18 @@
 use crate::fifo::DefaultBlockSize;
 
 pub mod non_blocking;
-mod async_wrapper;
+mod subscription;
+mod async_api;
 mod future;
 
-pub use async_wrapper::*;
+pub use async_api::*;
 pub use future::*;
 
 #[doc(inline)]
 pub use oneshot::new as oneshot;
 
-#[cfg(any(feature = "blocking", doc))]
-pub mod blocking;
+#[cfg(any(feature = "blocking", test, doc))]
+mod blocking;
 
 pub mod oneshot;
 

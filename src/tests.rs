@@ -136,6 +136,151 @@ fn test_multi_thread() {
 }
 
 #[test]
+fn test_cancellation_1() {
+    use futures_lite::future::{race, zip};
+    use alloc::vec::Vec;
+
+    async fn sleep_ms_none(millis: u64) -> Option<usize> {
+        use core::time::Duration;
+        let ten_ms = Duration::from_millis(millis);
+        async_io::Timer::after(ten_ms).await;
+        None
+    }
+
+    let (tx_normal, rx_normal) = super::new();
+    let rx_fallback = rx_normal.clone();
+
+
+    let total = 100usize;
+    let mut received = Vec::new();
+
+    async_io::block_on(async {
+        while received.len() < total {
+            let next = received.len();
+
+            let sending_task = async {
+                sleep_ms_none(3).await;
+                tx_normal.send(next);
+            };
+
+            let rx_normal = rx_normal.clone();
+            let feedback = &mut received;
+
+            let receiving_task = async move {
+                let timeout = sleep_ms_none(4);
+                let reception = async { rx_normal.recv().await.ok() };
+
+                if let Some(item) = race(timeout, reception).await {
+                    feedback.push(item);
+                }
+            };
+
+            zip(receiving_task, sending_task).await;
+
+            if received.last() != Some(&next) {
+                rx_fallback.try_recv().unwrap();
+            }
+        }
+    });
+
+    let expected: Vec<usize> = (0..total).collect();
+    assert_eq!(received, expected);
+}
+
+#[test]
+fn test_cancellation_2() {
+    use futures_lite::future::race;
+    use async_io::block_on;
+    use std::thread::spawn;
+
+    async fn sleep_ms_none(millis: u64) -> Option<usize> {
+        use core::time::Duration;
+        let ten_ms = Duration::from_millis(millis);
+        async_io::Timer::after(ten_ms).await;
+        None
+    }
+
+    let (tx_normal, rx_normal) = super::new();
+    let (tx_feedback, rx_feedback) = super::new();
+
+    let total = 500usize;
+
+    let rx_normal_a = rx_normal.clone();
+    let tx_feedback_a = tx_feedback.clone();
+
+    let good_citizen_a = async move {
+        while let Ok(_item) = rx_normal_a.recv().await {
+            // std::println!("A: {}", _item);
+            tx_feedback_a.send(0);
+            sleep_ms_none(1).await;
+        }
+
+        // std::println!("end of good citizen A");
+    };
+
+    let rx_normal_b = rx_normal.clone();
+    let tx_feedback_b = tx_feedback.clone();
+
+    let good_citizen_b = async move {
+        while let Ok(_item) = rx_normal_b.recv().await {
+            // std::println!("B: {}", _item);
+            tx_feedback_b.send(1);
+            sleep_ms_none(1).await;
+        }
+
+        // std::println!("end of good citizen B");
+    };
+
+    let rx_normal_c = rx_normal.clone();
+    let tx_feedback_c = tx_feedback.clone();
+
+    let bad_citizen_c = async move {
+        while !rx_normal_c.no_senders() {
+            let timeout = sleep_ms_none(3);
+            let reception = async { rx_normal_c.recv().await.ok() };
+            if let Some(_item) = race(timeout, reception).await {
+                // std::println!("C: {} ----", _item);
+                tx_feedback_c.send(2);
+            } else {
+                // std::println!("C: cancelled");
+            }
+        }
+
+        // std::println!("end of bad citizen");
+    };
+
+    let sending_task = async move {
+        for i in 0..total {
+            tx_normal.send(i);
+            sleep_ms_none(2).await;
+        }
+
+        // std::println!("end of sending");
+    };
+
+    let thread_a = spawn(|| block_on(good_citizen_a));
+    let thread_b = spawn(|| block_on(good_citizen_b));
+    let thread_c = spawn(|| block_on(bad_citizen_c));
+    let thread_d = spawn(|| block_on(sending_task));
+
+    thread_a.join().unwrap();
+    thread_b.join().unwrap();
+    thread_c.join().unwrap();
+    thread_d.join().unwrap();
+
+    let mut counters = [0; 3];
+
+    for _ in 0..total {
+        let i = rx_feedback.try_recv().unwrap();
+        counters[i] += 1;
+    }
+
+    // std::println!("A got {} items", counters[0]);
+    // std::println!("B got {} items", counters[1]);
+    // std::println!("C got {} items", counters[2]);
+}
+
+#[test]
 #[cfg(feature = "blocking")]
 fn test_multi_thread_blocking() {
     use core::sync::atomic::{AtomicUsize, Ordering};

@@ -199,6 +199,7 @@ unsafe impl<const L: usize, const F: usize, T> Sync for Fifo<L, F, T> {}
 pub trait FifoApi<T>: Send + Sync {
     fn push(&self, iter: &mut dyn ExactSizeIterator<Item = T>);
     fn pull(&self, storage: &mut dyn InternalStorageApi<T>) -> usize;
+    fn available_items(&self) -> usize;
 }
 
 impl<const L: usize, const F: usize, T> FifoApi<T> for Fifo<L, F, T> {
@@ -325,5 +326,11 @@ impl<const L: usize, const F: usize, T> FifoApi<T> for Fifo<L, F, T> {
         self.try_maintain();
 
         negotiated
+    }
+
+    fn available_items(&self) -> usize {
+        let produced = self.produced();
+        let i = self.cons_cursor.load(SeqCst);
+        produced.saturating_sub(i)
     }
 }

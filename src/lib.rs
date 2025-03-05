@@ -11,7 +11,7 @@
 
 #![no_std]
 
-#[cfg(any(test, feature = "blocking", doc))]
+#[cfg(any(test, doc, feature = "blocking"))]
 extern crate std;
 
 extern crate alloc;
@@ -30,10 +30,10 @@ pub mod channel;
 
 pub use channel::*;
 
-#[cfg(any(feature = "blocking", doc))]
+#[cfg(any(test, doc, feature = "blocking"))]
 mod fn_block_on;
 
-#[cfg(any(feature = "blocking", doc))]
+#[cfg(any(test, doc, feature = "blocking"))]
 #[doc(hidden)]
 pub use fn_block_on::block_on;
 

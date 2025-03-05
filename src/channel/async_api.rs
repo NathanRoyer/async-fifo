@@ -1,57 +1,16 @@
-use core::sync::atomic::AtomicBool;
-use core::sync::atomic::Ordering::SeqCst;
-use core::task::Waker;
 use core::ops::Deref;
-use core::iter::once;
-
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::fifo::{FifoApi, BlockSize, SmallBlockSize};
+use crate::fifo::BlockSize;
 
+use super::subscription::{Subscribers};
 use super::non_blocking::{Producer, Consumer};
 use super::future::{RecvOne, RecvArray, FillMany, FillExact};
-
-#[derive(Default)]
-struct ReceiverFlags {
-    cancelled: AtomicBool,
-    woken_up: AtomicBool,
-}
-
-struct Subscription {
-    waker: Waker,
-    flags: Arc<ReceiverFlags>,
-}
-
-impl Subscription {
-    /// Returns true if the subscription was cancelled
-    pub fn notify(self) -> bool {
-        self.waker.wake();
-        self.flags.woken_up.store(true, SeqCst);
-        self.flags.cancelled.load(SeqCst)
-    }
-}
-
-#[derive(Clone)]
-struct Subscribers {
-    fifo: Arc<dyn FifoApi<Subscription>>,
-}
-
-impl Subscribers {
-    fn notify_one(&self) {
-        let mut keep_going = true;
-        while keep_going {
-            let mut next_sub = None;
-            self.fifo.pull(&mut next_sub);
-            keep_going = next_sub.map(Subscription::notify).unwrap_or(false);
-        }
-    }
-}
 
 /// Asynchronous FIFO sender
 #[derive(Clone)]
 pub struct Sender<T> {
-    producer: Producer<T>,
+    producer: Option<Producer<T>>,
     subscribers: Subscribers,
 }
 
@@ -64,8 +23,9 @@ impl<T> Sender<T> {
         I: IntoIterator,
         I::IntoIter: ExactSizeIterator<Item = T>,
     {
-        self.producer.send_iter(into_iter);
-        self.subscribers.notify_one();
+        let producer = self.producer.as_ref();
+        producer.unwrap().send_iter(into_iter);
+        self.subscribers.notify_all();
     }
 
     /// Sends one item through the channel.
@@ -76,12 +36,19 @@ impl<T> Sender<T> {
     }
 }
 
+impl<T> Drop for Sender<T> {
+    fn drop(&mut self) {
+        let producer = self.producer.take();
+        core::mem::drop(producer);
+        self.subscribers.notify_all();
+    }
+}
+
 /// Asynchronous FIFO receiver
 #[derive(Clone)]
 pub struct Receiver<T> {
     consumer: Consumer<T>,
     subscribers: Subscribers,
-    flags: Arc<ReceiverFlags>,
 }
 
 impl<T> Deref for Receiver<T> {
@@ -93,29 +60,13 @@ impl<T> Deref for Receiver<T> {
 }
 
 impl<T> Receiver<T> {
-    pub(super) fn subscribe(&self, waker: Waker) {
-        let subscription = Subscription {
-            waker,
-            flags: self.flags.clone(),
-        };
-
-        let mut iter = once(subscription);
-        self.subscribers.fifo.push(&mut iter);
+    pub(super) fn subscribers(&self) -> &Subscribers {
+        &self.subscribers
     }
+}
 
-    pub(super) fn reset_flags(&self) {
-        self.flags.cancelled.store(false, SeqCst);
-        self.flags.woken_up.store(false, SeqCst);
-    }
-
-    fn cancel(&self) {
-        self.flags.cancelled.store(true, SeqCst);
-        if self.flags.woken_up.load(SeqCst) {
-            self.subscribers.notify_one();
-        }
-    }
-
-    /// Returns true if all producers have been dropped
+impl<T: Unpin> Receiver<T> {
+    /// Returns true if all senders have been dropped
     ///
     /// # Example
     ///
@@ -123,16 +74,16 @@ impl<T> Receiver<T> {
     /// let (tx, rx) = async_fifo::new();
     /// tx.send('z');
     ///
-    /// // one remaining producer
-    /// assert_eq!(rx.no_producers(), false);
+    /// // one remaining sender
+    /// assert_eq!(rx.no_senders(), false);
     ///
     /// // drop it
     /// core::mem::drop(tx);
     ///
-    /// // all producers are gone
-    /// assert_eq!(rx.no_producers(), true);
+    /// // all senders are gone
+    /// assert_eq!(rx.no_senders(), true);
     ///
-    /// // No producer, yes, but one item is still in there.
+    /// // No sender, yes, but one item is still in there.
     /// assert_eq!(rx.try_recv(), Some('z'));
     /// assert_eq!(rx.try_recv(), None);
     ///
@@ -140,9 +91,7 @@ impl<T> Receiver<T> {
     pub fn no_senders(&self) -> bool {
         self.consumer.no_producers()
     }
-}
 
-impl<T: Unpin> Receiver<T> {
     /// Receives one item, asynchronously.
     ///
     /// # Example
@@ -236,29 +185,20 @@ impl<T: Unpin> Receiver<T> {
     }
 }
 
-impl<T> Drop for Receiver<T> {
-    fn drop(&mut self) {
-        self.cancel();
-    }
-}
-
 impl<const L: usize, const F: usize> BlockSize<L, F> {
     pub fn channel<T: 'static>() -> (Sender<T>, Receiver<T>) {
         let (producer, consumer) = Self::non_blocking();
 
-        let subscribers = Subscribers {
-            fifo: SmallBlockSize::arc_fifo(),
-        };
+        let subscribers = Subscribers::default();
 
         let sender = Sender {
-            producer,
+            producer: Some(producer),
             subscribers: subscribers.clone(),
         };
 
         let receiver = Receiver {
             consumer,
             subscribers: subscribers.clone(),
-            flags: Arc::new(ReceiverFlags::default()),
         };
 
         (sender, receiver)
