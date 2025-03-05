@@ -87,6 +87,8 @@ pub struct Fifo<const L: usize, const F: usize, T> {
     visitors: [AtomicUsize; REV_CAP],
     // the wakers of pending consumers
     wakers: Box<[AtomicSlot<Waker>]>,
+    /// number of producers, used to detect closed channels
+    num_prod: AtomicUsize,
 }
 
 impl<const L: usize, const F: usize, T> Fifo<L, F, T> {
@@ -100,6 +102,7 @@ impl<const L: usize, const F: usize, T> Fifo<L, F, T> {
             recycle_bin: AtomicSlot::new(recycle_bin),
             visitors: from_fn(|_| AtomicUsize::new(0)),
             wakers,
+            num_prod: AtomicUsize::new(1),
         }
     }
 
@@ -201,6 +204,9 @@ pub trait FifoImpl<T> {
     fn try_recv(&self, storage: &mut dyn Storage<T>) -> usize;
     fn insert_waker(&self, waker: Box<Waker>, v: usize);
     fn take_waker(&self, v: usize) -> Option<Box<Waker>>;
+    fn is_closed(&self) -> bool;
+    fn inc_num_prod(&self);
+    fn dec_num_prod(&self);
 }
 
 impl<const L: usize, const F: usize, T> FifoImpl<T> for Fifo<L, F, T> {
@@ -350,5 +356,24 @@ impl<const L: usize, const F: usize, T> FifoImpl<T> for Fifo<L, F, T> {
 
     fn take_waker(&self, v: usize) -> Option<Box<Waker>> {
         self.wakers[v].try_take(false)
+    }
+
+    fn is_closed(&self) -> bool {
+        self.num_prod.load(SeqCst) == 0
+    }
+
+    fn inc_num_prod(&self) {
+        self.num_prod.fetch_add(1, SeqCst);
+    }
+
+    fn dec_num_prod(&self) {
+        if self.num_prod.fetch_sub(1, SeqCst) == 1 {
+            // wake all receiver to make them notice the channel is closed
+            for waker_slot in &self.wakers {
+                if let Some(waker) = waker_slot.try_take(false) {
+                    waker.wake_by_ref();
+                }
+            }
+        }
     }
 }

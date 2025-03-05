@@ -1,13 +1,23 @@
 #[test]
 fn test_one() {
-    use core::iter::once;
     use alloc::vec;
     let (tx, [rx]) = super::new();
 
-    tx.send_iter(once("Test"));
+    tx.send("Test");
     let results = rx.try_recv_many();
 
     assert_eq!(results, vec!["Test"]);
+}
+
+#[test]
+fn test_zero_sized() {
+    let (tx, [rx]) = super::new();
+    let array = [(); 16];
+
+    tx.send_iter(array.iter().cloned());
+    let results = rx.try_recv_many();
+
+    assert_eq!(&*results, array.as_slice());
 }
 
 #[test]
@@ -37,7 +47,7 @@ fn test_awful_lot() {
 #[test]
 fn test_multi_steps() {
     use alloc::vec::Vec;
-    let (tx, [rx]) = super::with_block_size::<1, 256, 32, _>();
+    let (tx, [rx]) = super::BlockSize::<256, 32>::build();
     let mut results = Vec::new();
     let mut input = Vec::new();
 
@@ -57,8 +67,7 @@ fn test_multi_thread_inner() {
     use alloc::vec::Vec;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    let (producer, consumers) = super::new::<12, usize>();
-    let mut consumers = Vec::from(consumers);
+    let (producer, mut consumers) = super::new_vec::<12, usize>();
     let total_consumed = Arc::new(AtomicUsize::new(0));
 
     let sends = 120;
@@ -112,9 +121,9 @@ fn test_multi_thread() {
 #[test]
 #[cfg(feature = "blocking")]
 fn test_multi_thread_blocking() {
+    use core::sync::atomic::{AtomicUsize, Ordering};
     use alloc::sync::Arc;
     use alloc::vec::Vec;
-    use core::sync::atomic::{AtomicUsize, Ordering};
 
     let (producer, [consumer]) = super::new();
     let total_consumed = Arc::new(AtomicUsize::new(0));
@@ -138,11 +147,15 @@ fn test_multi_thread_blocking() {
         handles.push(std::thread::spawn(thread_fn));
     }
 
+    core::mem::drop(producer);
+
     while total_consumed.load(Ordering::SeqCst) != total_produced {
-        let results = consumer.recv_exact_blocking::<10>();
+        let results = consumer.recv_exact_blocking::<10>().expect("closed");
         assert_eq!(results.as_slice(), &to_send);
         total_consumed.fetch_add(1, Ordering::SeqCst);
     }
+
+    assert_eq!(consumer.recv_exact_blocking::<10>(), Err(super::Closed));
 
     for handle in handles {
         let _ = handle.join();
