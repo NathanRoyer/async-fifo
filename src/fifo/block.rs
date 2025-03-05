@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicUsize, AtomicU8};
+use core::sync::atomic::{AtomicUsize, AtomicU8, AtomicU32};
 use core::sync::atomic::Ordering::{SeqCst, Relaxed};
 use core::mem::MaybeUninit;
 use core::cell::UnsafeCell;
@@ -70,7 +70,8 @@ fn try_xchg_int(atomic_int: &AtomicUsize, old: usize, new: usize) -> bool {
     atomic_int.compare_exchange(old, new, SeqCst, Relaxed).is_ok()
 }
 
-const REV_CAP: usize = 16;
+const REV_CAP_U32: u32 = 16;
+const REV_CAP: usize = REV_CAP_U32 as usize;
 
 pub struct Fifo<const L: usize, const F: usize, T> {
     // updated by consumers when they collect fully consumed first blocks
@@ -80,15 +81,15 @@ pub struct Fifo<const L: usize, const F: usize, T> {
     // updated by consumers when they take slots
     cons_cursor: AtomicUsize,
     // current revision
-    revision: AtomicUsize,
+    revision: AtomicU32,
     // Shared recycle bin for collected blocks
     recycle_bin: AtomicSlot<RecycleBin<L, F, T>>,
     // ringbuf of visitors per revision
-    visitors: [AtomicUsize; REV_CAP],
+    visitors: [AtomicU32; REV_CAP],
     // the wakers of pending consumers
     wakers: Box<[AtomicSlot<Waker>]>,
     /// number of producers, used to detect closed channels
-    num_prod: AtomicUsize,
+    num_prod: AtomicU32,
 }
 
 impl<const L: usize, const F: usize, T> Fifo<L, F, T> {
@@ -98,21 +99,22 @@ impl<const L: usize, const F: usize, T> Fifo<L, F, T> {
             first_block: BlockPointer::new(),
             prod_cursor: AtomicUsize::new(0),
             cons_cursor: AtomicUsize::new(0),
-            revision: AtomicUsize::new(0),
+            revision: AtomicU32::new(0),
             recycle_bin: AtomicSlot::new(recycle_bin),
-            visitors: from_fn(|_| AtomicUsize::new(0)),
+            visitors: from_fn(|_| AtomicU32::new(0)),
             wakers,
-            num_prod: AtomicUsize::new(1),
+            num_prod: AtomicU32::new(1),
         }
     }
 
     fn init_visit(&self) -> usize {
         loop {
-            let rev = self.revision.load(SeqCst);
+            let rev = self.revision.load(SeqCst) as usize;
             let rev_refcount = &self.visitors[rev % REV_CAP];
             rev_refcount.fetch_add(1, SeqCst);
 
-            match (self.revision.load(SeqCst) - rev) < REV_CAP {
+            let new_rev = self.revision.load(SeqCst) as usize;
+            match (new_rev - rev) < REV_CAP {
                 true => break rev,
                 // we have written into an already re-used refcount
                 false => _ = rev_refcount.fetch_sub(1, SeqCst),
@@ -126,7 +128,7 @@ impl<const L: usize, const F: usize, T> Fifo<L, F, T> {
 
     fn try_maintain(&self) {
         if let Some(mut bin) = self.recycle_bin.try_take(false) {
-            let current_rev = self.revision.load(SeqCst);
+            let current_rev = self.revision.load(SeqCst) as usize;
             let oldest_rev = current_rev.saturating_sub(REV_CAP - 1);
 
             // find the oldest revision that still has at least one visitor
@@ -165,7 +167,7 @@ impl<const L: usize, const F: usize, T> Fifo<L, F, T> {
                 }
 
                 if has_collected {
-                    self.revision.store(next_rev, SeqCst);
+                    self.revision.store(next_rev as u32, SeqCst);
                 }
             }
 
