@@ -1,20 +1,4 @@
-//! # One shot SPSC channels
-//! 
-//! Very simple single-use channels with a sync and async API, blocking/non-blocking.
-//! This builds on `AtomicSlot<T>`, so the item has to be boxed.
-//! Most useful for the transfer of return values in the context of remote procedure calling, as "reply pipes".
-//! 
-//! ```rust
-//! let (tx, rx) = async_fifo::slot::oneshot();
-//! let item = "Hello, world!";
-//! tx.send(Box::new(item));
-//! 
-//! let _task = async {
-//!     assert_eq!(*rx.await, item);
-//! };
-//! ```
-//! 
-//! # `AtomicSlot<T>`
+//! # `Slot<T>`
 //! 
 //! You can atomically swap the contents of this slot from any thread.
 //! Think of it as `Mutex<Option<Box<T>>>` without any actual locking.
@@ -27,16 +11,12 @@ use alloc::boxed::Box;
 
 use crate::try_swap_ptr;
 
-mod async_api;
-
-pub use async_api::*;
-
 /// Atomically Swappable `Option<Box<T>>`
-pub struct AtomicSlot<T> {
+pub struct Slot<T> {
     inner: AtomicPtr<T>,
 }
 
-impl<T> AtomicSlot<T> {
+impl<T> Slot<T> {
     const EMPTY: *mut T = null_mut();
     const LOCKED: *mut T = 1 as *mut T;
 
@@ -44,9 +24,9 @@ impl<T> AtomicSlot<T> {
         inner: AtomicPtr::new(Self::EMPTY)
     };
 
-    /// Creates a new `AtomicSlot` with an initial item inside.
+    /// Creates a new `Slot` with an initial item inside.
     ///
-    /// To create an empty slot, use `AtomicSlot::default()` or `AtomicSlot::NONE`.
+    /// To create an empty slot, use `Slot::default()` or `Slot::NONE`.
     pub fn new(item: Box<T>) -> Self {
         let slot = Self::default();
         assert!(slot.try_insert(item).is_ok());
@@ -105,13 +85,13 @@ impl<T> AtomicSlot<T> {
     }
 }
 
-impl<T> Default for AtomicSlot<T> {
+impl<T> Default for Slot<T> {
     fn default() -> Self {
         Self::NONE
     }
 }
 
-impl<T> Drop for AtomicSlot<T> {
+impl<T> Drop for Slot<T> {
     fn drop(&mut self) {
         core::mem::drop(self.try_take(true));
     }
