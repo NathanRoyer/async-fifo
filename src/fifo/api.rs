@@ -7,7 +7,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use super::block::{Fifo, FifoImpl};
-use super::{Storage, TmpArray, ExactSizeVec};
+use super::storage::TmpArray;
+use super::Storage;
 
 #[derive(Default)]
 /// Custom Block Size
@@ -156,7 +157,7 @@ impl<T> Producer<T> {
 
 /// Fifo Consumption Handle
 pub struct Consumer<T> {
-    fifo: Arc<dyn FifoImpl<T>>,
+    pub(super) fifo: Arc<dyn FifoImpl<T>>,
     waker_index: usize,
 }
 
@@ -172,31 +173,37 @@ impl<T> Consumer<T> {
         self.fifo.is_closed()
     }
 
+    /// Tries to receive one item.
+    pub fn try_recv(&self) -> Option<T> {
+        self.try_recv_array().map(|[item]| item)
+    }
+
+    /// Tries to receive as many items as possible, into a vector.
+    ///
+    /// If at least one item is received, the number of
+    /// received items is returned.
+    pub fn try_recv_many(&self, vec: &mut Vec<T>) -> Option<usize> {
+        self.try_recv_into(vec).ok()
+    }
+
+    /// Tries to receive `slice.len()` items into a slice.
+    pub fn try_recv_exact(&self, slice: &mut [T]) -> Option<()> {
+        self.try_recv_into(slice).ok()
+    }
+
+    /// Tries to receive exactly `N` items into an array.
+    pub fn try_recv_array<const N: usize>(&self) -> Option<[T; N]> {
+        let array = TmpArray {
+            inner: from_fn(|_| None),
+        };
+
+        self.try_recv_into(array).ok()
+    }
+
     /// Tries to receive some items into custom storage.
     pub fn try_recv_into<S: Storage<T>>(&self, mut storage: S) -> Result<S::Output, S> {
         let pushed = self.fifo.try_recv(&mut storage);
         storage.finish(pushed)
-    }
-
-    /// Tries to receive as many items as possible, into a vector.
-    pub fn try_recv_many(&self) -> Option<Vec<T>> {
-        self.try_recv_into(Vec::new()).ok()
-    }
-
-    /// Tries to receive exactly `N` items into an array.
-    pub fn try_recv_exact<const N: usize>(&self) -> Option<[T; N]> {
-        let array = TmpArray(from_fn(|_| None));
-        self.try_recv_into(array).ok()
-    }
-
-    /// Tries to receive exactly `N` items into a Vec.
-    pub fn try_recv_exact_vec<const N: usize>(&self) -> Option<Vec<T>> {
-        self.try_recv_into(ExactSizeVec::<N, T>::default()).ok()
-    }
-
-    /// Tries to receive one item.
-    pub fn try_recv(&self) -> Option<T> {
-        self.try_recv_exact().map(|[item]| item)
     }
 
     /// Sets the waker of the current task, to be woken up when new items are available.
