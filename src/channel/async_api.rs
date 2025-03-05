@@ -3,15 +3,24 @@ use alloc::vec::Vec;
 
 use crate::fifo::BlockSize;
 
-use super::subscription::{Subscribers};
+use super::subscription::Subscribers;
 use super::non_blocking::{Producer, Consumer};
 use super::future::{RecvOne, RecvArray, FillMany, FillExact};
 
 /// Asynchronous FIFO sender
-#[derive(Clone)]
 pub struct Sender<T> {
     producer: Option<Producer<T>>,
     subscribers: Subscribers,
+}
+
+// I don't understand why deriving requires T: Clone
+impl<T> Clone for Sender<T> {
+    fn clone(&self) -> Self {
+        Self {
+            producer: self.producer.clone(),
+            subscribers: self.subscribers.clone(),
+        }
+    }
 }
 
 impl<T> Sender<T> {
