@@ -138,9 +138,12 @@ impl<const L: usize, const F: usize, T> Drop for BlockPointer<L, F, T> {
         let mut block_ptr = self.inner.swap(null_mut(), SeqCst);
         while !block_ptr.is_null() {
             // safety: see BlockPointer::load()
-            // note: looping here to avoid recursion
             let block = unsafe { Box::from_raw(block_ptr) };
-            block_ptr = self.inner.swap(null_mut(), SeqCst);
+
+            // load this block's next pointer to repeat the operation
+            block_ptr = block.next.inner.swap(null_mut(), SeqCst);
+
+            // drop this block, continue with its next block
             drop(block);
         }
     }
