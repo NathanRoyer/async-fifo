@@ -81,28 +81,28 @@ pub struct Fifo<const L: usize, const F: usize, T> {
     cons_cursor: AtomicUsize,
     // current revision
     revision: AtomicUsize,
+    // Shared recycle bin for collected blocks
+    recycle_bin: AtomicSlot<RecycleBin<L, F, T>>,
     // each visitor's current visit revision
     visitors: Box<[AtomicUsize]>,
     // the wakers of pending consumers
     wakers: Box<[AtomicSlot<Waker>]>,
-    //
-    recycle_bins: Box<[AtomicSlot<RecycleBin<L, F, T>>]>,
 }
 
 impl<const L: usize, const F: usize, T> Fifo<L, F, T> {
     pub fn new(
         visitors: Box<[AtomicUsize]>,
         wakers: Box<[AtomicSlot<Waker>]>,
-        recycle_bins: Box<[AtomicSlot<RecycleBin<L, F, T>>]>,
     ) -> Self {
+        let recycle_bin = Box::new(RecycleBin::new());
         Self {
             first_block: BlockPointer::new(),
             prod_cursor: AtomicUsize::new(0),
             cons_cursor: AtomicUsize::new(0),
             revision: AtomicUsize::new(0),
+            recycle_bin: AtomicSlot::new(recycle_bin),
             visitors,
             wakers,
-            recycle_bins,
         }
     }
 
@@ -149,23 +149,22 @@ impl<const L: usize, const F: usize, T> Fifo<L, F, T> {
         true
     }
 
-    fn maintain(&self, visitor_index: usize) {
-        let mut bin = self.recycle_bins[visitor_index].try_take(false).unwrap();
+    fn try_maintain(&self) {
+        if let Some(mut bin) = self.recycle_bin.try_take(false) {
+            let gen = || self.first_block.try_collect(&self.revision);
+            bin.extend(core::iter::from_fn(gen));
 
-        let gen = || self.first_block.try_collect(&self.revision);
-        bin.extend(core::iter::from_fn(gen));
-
-        while let Some(collected) = bin.first() {
-            if self.can_recycle(collected) {
-                let collected = bin.remove(0);
-                self.first_block.recycle(collected);
-            } else {
-                break;
+            while let Some(collected) = bin.first() {
+                if self.can_recycle(collected) {
+                    let collected = bin.remove(0);
+                    self.first_block.recycle(collected);
+                } else {
+                    break;
+                }
             }
-        }
 
-        let res = self.recycle_bins[visitor_index].try_insert(bin);
-        assert!(res.is_ok());
+            assert!(self.recycle_bin.try_insert(bin).is_ok());
+        }
     }
 }
 
@@ -225,7 +224,7 @@ impl<const L: usize, const F: usize, T> FifoImpl<T> for Fifo<L, F, T> {
         }
 
         self.stop_visit(v);
-        self.maintain(v);
+        self.try_maintain();
 
         for waker_slot in &self.wakers {
             if let Some(waker) = waker_slot.try_take(false) {
@@ -304,7 +303,7 @@ impl<const L: usize, const F: usize, T> FifoImpl<T> for Fifo<L, F, T> {
         }
 
         self.stop_visit(v);
-        self.maintain(v);
+        self.try_maintain();
 
         negociated
     }
