@@ -23,7 +23,7 @@ impl<T> AtomicSlot<T> {
         inner: AtomicPtr::new(Self::EMPTY)
     };
 
-    /// Creates a new `AtomicSlot` with an initial item inside
+    /// Creates a new `AtomicSlot` with an initial item inside.
     ///
     /// To create an empty slot, use `AtomicSlot::default()` or `AtomicSlot::NONE`.
     pub fn new(item: Box<T>) -> Self {
@@ -32,7 +32,7 @@ impl<T> AtomicSlot<T> {
         slot
     }
 
-    /// Tries to push an item into this slot
+    /// Tries to push an item into this slot, failing if it's occupied or locked.
     pub fn try_insert(&self, item: Box<T>) -> Result<(), Box<T>> {
         let item_ptr = Box::leak(item);
         match try_xchg_ptr(&self.inner, Self::EMPTY, item_ptr) {
@@ -52,7 +52,7 @@ impl<T> AtomicSlot<T> {
         }
     }
 
-    /// Tries to extract the contained item
+    /// Tries to extract the contained item.
     ///
     /// Setting `lock` to `true` will prevent pushing into this slot again.
     pub fn try_take(&self, lock: bool) -> Option<Box<T>> {
@@ -76,7 +76,7 @@ impl<T> AtomicSlot<T> {
         self.inner.load(SeqCst) == Self::LOCKED
     }
 
-    /// Forcibly unlocks this slot
+    /// Forcibly unlocks this slot.
     ///
     /// Does nothing if the slot isn't locked
     pub fn unlock(&self) -> bool {
