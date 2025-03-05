@@ -16,12 +16,11 @@ use super::{Storage, TmpArray};
 ///
 /// Panics if `F` isn't equal to `L / 8`;
 pub fn with_block_size<
-    const P: usize,
     const C: usize,
     const L: usize,
     const F: usize,
     T: 'static,
->() -> ([Producer<T>; P], [Consumer<T>; C]) {
+>() -> (Producer<T>, [Consumer<T>; C]) {
     assert_eq!(F * 8, L);
     let mut wakers = Vec::with_capacity(C);
 
@@ -38,19 +37,20 @@ pub fn with_block_size<
         waker_index: i,
     };
 
-    let producer = |_i| Producer {
+    let producer = Producer {
         fifo: arc.clone(),
     };
 
-    (from_fn(producer), from_fn(consumer))
+    (producer, from_fn(consumer))
 }
 
 /// Creates a Fifo with reasonable default parameters.
-pub fn new<const P: usize, const C: usize, T: 'static>() -> ([Producer<T>; P], [Consumer<T>; C]) {
-    with_block_size::<P, C, 32, 4, T>()
+pub fn new<const C: usize, T: 'static>() -> (Producer<T>, [Consumer<T>; C]) {
+    with_block_size::<C, 32, 4, T>()
 }
 
-/// Fifo Production Handle
+/// Fifo Production Handle (implements `Clone`)
+#[derive(Clone)]
 pub struct Producer<T> {
     fifo: Arc<dyn FifoImpl<T>>,
 }
@@ -71,7 +71,7 @@ impl<T> Producer<T> {
     }
 }
 
-/// Fifo Consumtion Handle
+/// Fifo Consumption Handle
 pub struct Consumer<T> {
     fifo: Arc<dyn FifoImpl<T>>,
     waker_index: usize,
