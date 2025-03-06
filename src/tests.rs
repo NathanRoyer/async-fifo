@@ -136,6 +136,46 @@ fn test_multi_thread() {
 }
 
 #[test]
+fn test_async() {
+    use async_io::block_on;
+    use std::thread::spawn;
+
+    async fn sleep_ms_none(millis: u64) -> Option<usize> {
+        use core::time::Duration;
+        let ten_ms = Duration::from_millis(millis);
+        async_io::Timer::after(ten_ms).await;
+        None
+    }
+
+    let (tx_normal, mut rx_normal) = super::new();
+
+    let total = 500usize;
+
+    let sending_task = async move {
+        for i in 1..total {
+            let woken_up = tx_normal.send(i);
+            assert!(woken_up < 5, "woken_up={woken_up}");
+            sleep_ms_none(1).await;
+        }
+    };
+
+    let receiving_task = async move {
+        let mut last = 0;
+        while let Ok(item) = rx_normal.recv().await {
+            assert_eq!(item, last + 1);
+            sleep_ms_none(1).await;
+            last = item;
+        }
+    };
+
+    let thread_a = spawn(|| block_on(sending_task));
+    let thread_b = spawn(|| block_on(receiving_task));
+
+    thread_a.join().unwrap();
+    thread_b.join().unwrap();
+}
+
+#[test]
 fn test_cancellation_1() {
     use futures_lite::future::{race, zip};
     use alloc::vec::Vec;
@@ -163,7 +203,7 @@ fn test_cancellation_1() {
                 tx_normal.send(next);
             };
 
-            let rx_normal = rx_normal.clone();
+            let mut rx_normal = rx_normal.clone();
             let feedback = &mut received;
 
             let receiving_task = async move {
@@ -205,7 +245,7 @@ fn test_cancellation_2() {
 
     let total = 500usize;
 
-    let rx_normal_a = rx_normal.clone();
+    let mut rx_normal_a = rx_normal.clone();
     let tx_feedback_a = tx_feedback.clone();
 
     let good_citizen_a = async move {
@@ -218,7 +258,7 @@ fn test_cancellation_2() {
         // std::println!("end of good citizen A");
     };
 
-    let rx_normal_b = rx_normal.clone();
+    let mut rx_normal_b = rx_normal.clone();
     let tx_feedback_b = tx_feedback.clone();
 
     let good_citizen_b = async move {
@@ -231,7 +271,7 @@ fn test_cancellation_2() {
         // std::println!("end of good citizen B");
     };
 
-    let rx_normal_c = rx_normal.clone();
+    let mut rx_normal_c = rx_normal.clone();
     let tx_feedback_c = tx_feedback.clone();
 
     let bad_citizen_c = async move {
@@ -287,7 +327,7 @@ fn test_multi_thread_blocking() {
     use alloc::sync::Arc;
     use alloc::vec::Vec;
 
-    let (producer, consumer) = super::new();
+    let (producer, mut consumer) = super::new();
     let total_consumed = Arc::new(AtomicUsize::new(0));
 
     let sends = 120;

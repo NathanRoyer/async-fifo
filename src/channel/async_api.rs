@@ -1,4 +1,5 @@
 use core::ops::Deref;
+use core::mem::drop;
 use alloc::vec::Vec;
 
 use crate::fifo::BlockSize;
@@ -27,28 +28,28 @@ impl<T> Sender<T> {
     /// Sends a batch of items in the channel, atomically.
     ///
     /// This operation is non-blocking and always succeeds immediately.
-    pub fn send_iter<I>(&self, into_iter: I)
+    /// When the call returns, all items are ready to be received.
+    pub fn send_iter<I>(&self, into_iter: I) -> usize
     where
         I: IntoIterator,
         I::IntoIter: ExactSizeIterator<Item = T>,
     {
         let producer = self.producer.as_ref();
         producer.unwrap().send_iter(into_iter);
-        self.subscribers.notify_all();
+        self.subscribers.notify_all()
     }
 
     /// Sends one item through the channel.
     ///
     /// This operation is non-blocking and always succeeds immediately.
-    pub fn send(&self, item: T) {
-        self.send_iter(core::iter::once(item));
+    pub fn send(&self, item: T) -> usize {
+        self.send_iter(core::iter::once(item))
     }
 }
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
-        let producer = self.producer.take();
-        core::mem::drop(producer);
+        drop(self.producer.take());
         self.subscribers.notify_all();
     }
 }
@@ -58,6 +59,7 @@ impl<T> Drop for Sender<T> {
 pub struct Receiver<T> {
     consumer: Consumer<T>,
     subscribers: Subscribers,
+    pub(super) last_wake_count: Option<usize>,
 }
 
 impl<T> Deref for Receiver<T> {
@@ -80,7 +82,7 @@ impl<T: Unpin> Receiver<T> {
     /// # Example
     ///
     /// ```rust
-    /// let (tx, rx) = async_fifo::new();
+    /// let (tx, mut rx) = async_fifo::new();
     /// tx.send('z');
     ///
     /// // one remaining sender
@@ -108,7 +110,7 @@ impl<T: Unpin> Receiver<T> {
     /// ```rust
     /// # use async_fifo::{block_on, Closed};
     /// # block_on(async {
-    /// let (tx, rx) = async_fifo::new();
+    /// let (tx, mut rx) = async_fifo::new();
     /// tx.send_iter(['a', 'b', 'c']);
     ///
     /// // Receive one by one
@@ -120,7 +122,7 @@ impl<T: Unpin> Receiver<T> {
     /// assert_eq!(rx.recv().await, Err(Closed));
     /// # });
     /// ```
-    pub fn recv(&self) -> RecvOne<'_, T> {
+    pub fn recv(&mut self) -> RecvOne<'_, T> {
         self.into_recv()
     }
 
@@ -133,7 +135,7 @@ impl<T: Unpin> Receiver<T> {
     /// ```rust
     /// # use async_fifo::{block_on, Closed};
     /// # block_on(async {
-    /// let (tx, rx) = async_fifo::new();
+    /// let (tx, mut rx) = async_fifo::new();
     /// tx.send_iter(['a', 'b', 'c', 'd']);
     /// 
     /// // Pull as much as possible into a vec
@@ -145,7 +147,7 @@ impl<T: Unpin> Receiver<T> {
     /// assert_eq!(rx.recv_many(&mut bucket).await, Err(Closed));
     /// # });
     /// ```
-    pub fn recv_many<'a>(&'a self, vec: &'a mut Vec<T>) -> FillMany<'a, T> {
+    pub fn recv_many<'a>(&'a mut self, vec: &'a mut Vec<T>) -> FillMany<'a, T> {
         self.into_fill(vec)
     }
 
@@ -156,7 +158,7 @@ impl<T: Unpin> Receiver<T> {
     /// ```rust
     /// # use async_fifo::{block_on, Closed};
     /// # block_on(async {
-    /// let (tx, rx) = async_fifo::new();
+    /// let (tx, mut rx) = async_fifo::new();
     /// tx.send_iter(['a', 'b', 'c']);
     /// 
     /// // Pull a specific amount into a slice
@@ -168,7 +170,7 @@ impl<T: Unpin> Receiver<T> {
     /// assert_eq!(rx.recv_exact(&mut buffer).await, Err(Closed));
     /// # });
     /// ```
-    pub fn recv_exact<'a>(&'a self, slice: &'a mut [T]) -> FillExact<'a, T> {
+    pub fn recv_exact<'a>(&'a mut self, slice: &'a mut [T]) -> FillExact<'a, T> {
         self.into_fill(slice)
     }
 
@@ -179,7 +181,7 @@ impl<T: Unpin> Receiver<T> {
     /// ```rust
     /// # use async_fifo::{block_on, Closed};
     /// # block_on(async {
-    /// let (tx, rx) = async_fifo::new();
+    /// let (tx, mut rx) = async_fifo::new();
     /// tx.send_iter(['a', 'b', 'c']);
     /// 
     /// // Pull a specific amount into an array
@@ -189,7 +191,7 @@ impl<T: Unpin> Receiver<T> {
     /// assert_eq!(rx.recv_array::<3>().await, Err(Closed));
     /// # });
     /// ```
-    pub fn recv_array<const N: usize>(&self) -> RecvArray<'_, N, T> {
+    pub fn recv_array<const N: usize>(&mut self) -> RecvArray<'_, N, T> {
         self.into_recv()
     }
 }
@@ -207,6 +209,7 @@ impl<const L: usize, const F: usize> BlockSize<L, F> {
 
         let receiver = Receiver {
             consumer,
+            last_wake_count: None,
             subscribers: subscribers.clone(),
         };
 

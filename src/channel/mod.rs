@@ -5,7 +5,7 @@
 //! ```rust
 //! # use async_fifo::{block_on, Closed};
 //! # block_on(async {
-//! let (tx, rx) = async_fifo::new();
+//! let (tx, mut rx) = async_fifo::new();
 //! tx.send_iter(['a', 'b', 'c']);
 //!
 //! // Receive one by one

@@ -27,7 +27,7 @@ pub trait RecvStorage<T>: FillStorage<T> + Default {}
 ///
 /// This future is safely cancellable.
 pub struct Recv<'a, S: RecvStorage<T>, T> {
-    receiver: &'a Receiver<T>,
+    receiver: &'a mut Receiver<T>,
     storage: Option<S>,
 }
 
@@ -38,7 +38,7 @@ pub struct Recv<'a, S: RecvStorage<T>, T> {
 ///
 /// This future is safely cancellable.
 pub struct Fill<'a, S: FillStorage<T>, T> {
-    receiver: &'a Receiver<T>,
+    receiver: &'a mut Receiver<T>,
     storage: S,
 }
 
@@ -56,7 +56,7 @@ pub type FillMany<'a, T> = Fill<'a, &'a mut Vec<T>, T>;
 
 impl<T: Unpin> Receiver<T> {
     /// Receives some items into custom storage, asynchronously.
-    pub fn into_recv<S: RecvStorage<T>>(&self) -> Recv<'_, S, T> {
+    pub fn into_recv<S: RecvStorage<T>>(&mut self) -> Recv<'_, S, T> {
         Recv {
             receiver: self,
             storage: None,
@@ -64,7 +64,7 @@ impl<T: Unpin> Receiver<T> {
     }
 
     /// Receives some items into custom storage, asynchronously.
-    pub fn into_fill<S: FillStorage<T>>(&self, storage: S) -> Fill<'_, S, T> {
+    pub fn into_fill<S: FillStorage<T>>(&mut self, storage: S) -> Fill<'_, S, T> {
         Fill {
             receiver: self,
             storage,
@@ -74,16 +74,21 @@ impl<T: Unpin> Receiver<T> {
 
 pub(super) fn set_waker_check_no_prod<T: Unpin>(
     cx: &mut Context<'_>,
-    receiver: &Receiver<T>,
+    receiver: &mut Receiver<T>,
 ) -> bool {
     if receiver.no_senders() {
         return true;
     }
 
-    // set it up
-    receiver.subscribers().subscribe(cx.waker().clone());
+    // set the waker up
+    // prevent re-pushing the waker by watching a wake count
+    let waker = cx.waker().clone();
+    let last_wc = receiver.last_wake_count.take();
+    let subs = receiver.subscribers();
+    let current_wc = subs.subscribe(waker, last_wc);
+    receiver.last_wake_count = Some(current_wc);
 
-    // maybe it was closed while we were inserting our waker
+    // maybe the channel got closed while we were inserting our waker
     receiver.no_senders()
 }
 
@@ -91,29 +96,31 @@ impl<'a, S: RecvStorage<T>, T: Unpin> Future for Recv<'a, S, T> {
     type Output = Result<S::Output, Closed>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let storage = self.storage.take().unwrap_or_default();
+        let Self {
+            receiver,
+            storage,
+        } = &mut *self;
+
+        let taken_storage = storage.take().unwrap_or_default();
 
         // first try
-        let storage = match self.receiver.try_recv_into(storage) {
-            Ok(result) => {
-                return Poll::Ready(Ok(result))
-            },
-            Err(storage) => storage,
+        let taken_storage = match receiver.try_recv_into(taken_storage) {
+            Ok(result) => return Poll::Ready(Ok(result)),
+            Err(taken_storage) => taken_storage,
         };
 
         // subscribe
-        if set_waker_check_no_prod(cx, &self.receiver) {
-            return Poll::Ready(Err(Closed));
+        let mut fail_ret = Poll::Pending;
+        if set_waker_check_no_prod(cx, receiver) {
+            fail_ret = Poll::Ready(Err(Closed));
         }
 
         // second try
-        match self.receiver.try_recv_into(storage) {
-            Ok(result) => {
-                Poll::Ready(Ok(result))
-            },
-            Err(storage) => {
-                self.storage = Some(storage);
-                Poll::Pending
+        match receiver.try_recv_into(taken_storage) {
+            Ok(result) => Poll::Ready(Ok(result)),
+            Err(taken_storage) => {
+                *storage = Some(taken_storage);
+                fail_ret
             },
         }
     }
@@ -129,19 +136,19 @@ impl<'a, T: Unpin, S: FillStorage<T>> Future for Fill<'a, S, T> {
         } = &mut *self;
 
         // first try
-        let len = receiver.fifo().pull(storage);
-        if len != 0 {
+        if let len @ 1.. = receiver.fifo().pull(storage) {
             return Poll::Ready(Ok(len));
         }
 
         // subscribe
+        let mut fail_ret = Poll::Pending;
         if set_waker_check_no_prod(cx, receiver) {
-            return Poll::Ready(Err(Closed));
+            fail_ret = Poll::Ready(Err(Closed));
         }
 
         // second try
         match receiver.fifo().pull(storage) {
-            0 => Poll::Pending,
+            0 => fail_ret,
             len => Poll::Ready(Ok(len)),
         }
     }

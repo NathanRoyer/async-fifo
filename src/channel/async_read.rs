@@ -24,9 +24,9 @@ impl InternalStorageApi<u8> for UpToLen<'_> {
     fn reserve(&mut self, _len: usize) {}
 }
 
-impl AsyncRead for Receiver<u8> {
+impl<'a> AsyncRead for Receiver<u8> {
     fn poll_read(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<IoResult<usize>> {
@@ -41,7 +41,7 @@ impl AsyncRead for Receiver<u8> {
         }
 
         // subscribe
-        if set_waker_check_no_prod(cx, &self) {
+        if set_waker_check_no_prod(cx, &mut self) {
             return Poll::Ready(Err(Error::new(BrokenPipe, "Closed")));
         }
 

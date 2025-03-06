@@ -217,11 +217,6 @@ impl<T> Consumer<T> {
         storage.finish(pushed)
     }
 
-    /// Returns the number of items pending in the FIFO
-    pub fn available_items(&self) -> usize {
-        self.fifo.available_items()
-    }
-
     pub(crate) fn fifo(&self) -> &dyn FifoApi<T> {
         &*self.fifo
     }

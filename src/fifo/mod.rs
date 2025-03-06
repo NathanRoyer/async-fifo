@@ -21,8 +21,7 @@ mod block_ptr;
 mod block_size;
 mod storage;
 
-const REV_CAP_U32: u32 = 8;
-const REV_CAP: usize = REV_CAP_U32 as usize;
+const REV_CAP: usize = 8;
 
 type RecycleBin<const L: usize, const F: usize, T> = Vec<CollectedBlock<L, F, T>>;
 
@@ -133,9 +132,12 @@ impl<const L: usize, const F: usize, T> Fifo<L, F, T> {
             }
         }
 
-        let next_rev = current_rev + 1;
         let oldest_used_slot = oldest_visited_rev % REV_CAP;
+
+        let next_rev = current_rev + 1;
         let next_slot = next_rev % REV_CAP;
+
+        // is no one visiting this revision?
         let can_increment = next_slot != oldest_used_slot;
 
         let mut i = 0;
@@ -199,7 +201,11 @@ unsafe impl<const L: usize, const F: usize, T> Sync for Fifo<L, F, T> {}
 pub trait FifoApi<T>: Send + Sync {
     fn push(&self, iter: &mut dyn ExactSizeIterator<Item = T>);
     fn pull(&self, storage: &mut dyn InternalStorageApi<T>) -> usize;
-    fn available_items(&self) -> usize;
+    fn iter(&self) -> PullIter<'_, T>;
+    #[doc(hidden)]
+    fn consume_item(&self, i: usize) -> T;
+    #[doc(hidden)]
+    fn iter_drop(&self);
 }
 
 impl<const L: usize, const F: usize, T> FifoApi<T> for Fifo<L, F, T> {
@@ -260,11 +266,12 @@ impl<const L: usize, const F: usize, T> FifoApi<T> for Fifo<L, F, T> {
     /// of the `storage` parameter, this returns zero.
     ///
     /// This method doesn't spin, yield or sleeps; it should complete
-    /// rather immediately.
+    /// rather immediately. The only think that can take time here is
+    /// an occasional memory allocation.
     fn pull(&self, storage: &mut dyn InternalStorageApi<T>) -> usize {
         let (min, max) = storage.bounds();
         let max = max.unwrap_or(usize::MAX);
-        let min = min.unwrap_or(0);
+        let min = min.unwrap_or(1);
         let revision = self.init_visit();
 
         let mut success = false;
@@ -281,6 +288,7 @@ impl<const L: usize, const F: usize, T> FifoApi<T> for Fifo<L, F, T> {
 
             if negotiated < min {
                 negotiated = 0;
+                break;
             }
 
             success = try_swap_int(&self.cons_cursor, i, i + negotiated);
@@ -328,9 +336,100 @@ impl<const L: usize, const F: usize, T> FifoApi<T> for Fifo<L, F, T> {
         negotiated
     }
 
-    fn available_items(&self) -> usize {
-        let produced = self.produced();
-        let i = self.cons_cursor.load(SeqCst);
-        produced.saturating_sub(i)
+    fn iter(&self) -> PullIter<'_, T> {
+        let revision = self.init_visit();
+        let mut success = false;
+        let mut i = 0;
+        let mut negotiated = 0;
+
+        while !success {
+            let produced = self.produced();
+            i = self.cons_cursor.load(SeqCst);
+
+            negotiated = match produced.checked_sub(i) {
+                Some(available) => available,
+                None => continue,
+            };
+
+            success = try_swap_int(&self.cons_cursor, i, i + negotiated);
+        }
+
+        self.stop_visit(revision);
+
+        PullIter {
+            fifo: self,
+            i,
+            remaining: negotiated,
+        }
+    }
+
+    fn consume_item(&self, i: usize) -> T {
+        let revision = self.init_visit();
+        let mut is_first_block = true;
+        let mut block_offset = 0;
+        let mut maybe_block = &self.first_block;
+
+        let item = loop {
+            let block = maybe_block.load().unwrap();
+
+            if is_first_block {
+                block_offset = block.offset.load(SeqCst);
+                is_first_block = false;
+            }
+
+            let next_block_offset = block_offset + L;
+            let block_range = block_offset..next_block_offset;
+
+            // do we have slots here?
+            if block_range.contains(&i) {
+                let slot_i = i - block_offset;
+                break block.consume(slot_i);
+            }
+
+            block_offset = next_block_offset;
+            maybe_block = &block.next;
+        };
+
+        self.stop_visit(revision);
+
+        item
+    }
+
+    fn iter_drop(&self) {
+        self.try_maintain();
+    }
+}
+
+pub struct PullIter<'a, T> {
+    fifo: &'a dyn FifoApi<T>,
+    i: usize,
+    remaining: usize,
+}
+
+impl<'a, T> Iterator for PullIter<'a, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let next_rem = self.remaining.checked_sub(1)?;
+        let item = self.fifo.consume_item(self.i);
+
+        self.remaining = next_rem;
+        self.i += 1;
+
+        Some(item)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<'a, T> ExactSizeIterator for PullIter<'a, T> {}
+
+impl<'a, T> Drop for PullIter<'a, T> {
+    fn drop(&mut self) {
+        // consume remaining items
+        let _ = self.count();
+        self.fifo.iter_drop();
     }
 }
