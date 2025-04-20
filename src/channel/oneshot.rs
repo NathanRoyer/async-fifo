@@ -69,7 +69,7 @@ impl<T> Sender<T> {
     }
 }
 
-#[cfg(any(feature = "blocking", doc))]
+#[cfg(feature = "blocking")]
 impl<T> Receiver<T> {
     /// Waits for a value to be received from the channel.
     ///

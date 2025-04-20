@@ -31,10 +31,10 @@ pub use future::*;
 #[doc(inline)]
 pub use oneshot::new as oneshot;
 
-#[cfg(any(feature = "blocking", test, doc))]
+#[cfg(feature = "blocking")]
 mod blocking;
 
-#[cfg(any(feature = "async-read", test, doc))]
+#[cfg(feature = "async-read")]
 mod async_read;
 
 pub mod oneshot;

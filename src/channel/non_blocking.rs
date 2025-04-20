@@ -233,8 +233,8 @@ impl<const L: usize, const F: usize> BlockSize<L, F> {
         };
 
         let consumer = Consumer {
-            fifo: fifo,
-            num_prod: num_prod,
+            fifo,
+            num_prod,
         };
 
         (producer, consumer)

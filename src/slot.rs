@@ -5,7 +5,6 @@
 
 use core::sync::atomic::Ordering::SeqCst;
 use core::sync::atomic::AtomicPtr;
-use core::ptr::null_mut;
 
 use alloc::boxed::Box;
 
@@ -17,8 +16,8 @@ pub struct Slot<T> {
 }
 
 impl<T> Slot<T> {
-    const EMPTY: *mut T = null_mut();
-    const LOCKED: *mut T = 1 as *mut T;
+    const EMPTY: *mut T = 1 as *mut T;
+    const LOCKED: *mut T = 2 as *mut T;
 
     pub const NONE: Self = Self {
         inner: AtomicPtr::new(Self::EMPTY)

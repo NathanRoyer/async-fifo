@@ -2,7 +2,7 @@
 name = "async-fifo"
 description = "MPMC & oneshot channels with (a)sync API"
 authors = ["Nathan Royer <nathan.royer.pro@gmail.com>"]
-version = "0.6.3"
+version = "0.6.4"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/NathanRoyer/async-fifo"
