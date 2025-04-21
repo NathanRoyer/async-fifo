@@ -25,11 +25,9 @@ impl<T> Clone for Sender<T> {
 }
 
 impl<T> Sender<T> {
-    /// Sends a batch of items in the channel, atomically.
-    ///
-    /// This operation is non-blocking and always succeeds immediately.
-    /// When the call returns, all items are ready to be received.
-    pub fn send_iter<I>(&self, into_iter: I) -> usize
+    #[doc(hidden)]
+    /// This `send_iter` variant returns the number of woken-up receivers
+    pub fn send_iter_2<I>(&self, into_iter: I) -> usize
     where
         I: IntoIterator,
         I::IntoIter: ExactSizeIterator<Item = T>,
@@ -39,11 +37,23 @@ impl<T> Sender<T> {
         self.subscribers.notify_all()
     }
 
+    /// Sends a batch of items in the channel, atomically.
+    ///
+    /// This operation is non-blocking and always succeeds immediately.
+    /// When the call returns, all items are ready to be received.
+    pub fn send_iter<I>(&self, into_iter: I)
+    where
+        I: IntoIterator,
+        I::IntoIter: ExactSizeIterator<Item = T>,
+    {
+        self.send_iter_2(into_iter);
+    }
+
     /// Sends one item through the channel.
     ///
     /// This operation is non-blocking and always succeeds immediately.
-    pub fn send(&self, item: T) -> usize {
-        self.send_iter(core::iter::once(item))
+    pub fn send(&self, item: T) {
+        self.send_iter_2(core::iter::once(item));
     }
 }
 

@@ -139,6 +139,7 @@ fn test_multi_thread() {
 fn test_async() {
     use async_io::block_on;
     use std::thread::spawn;
+    use std::iter::once;
 
     async fn sleep_ms_none(millis: u64) -> Option<usize> {
         use core::time::Duration;
@@ -153,7 +154,7 @@ fn test_async() {
 
     let sending_task = async move {
         for i in 1..total {
-            let woken_up = tx_normal.send(i);
+            let woken_up = tx_normal.send_iter_2(once(i));
             assert!(woken_up < 5, "woken_up={woken_up}");
             sleep_ms_none(1).await;
         }
